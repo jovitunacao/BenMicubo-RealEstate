@@ -9,8 +9,10 @@ import {
   Eye,
   FileText,
   GripVertical,
+  HardDrive,
   Image as ImageIcon,
   Lock,
+  Play,
   Plus,
   RefreshCw,
   Send,
@@ -41,7 +43,7 @@ import {
   formatSqm,
   generateNextLotId,
 } from '../utils/format';
-import {extractYouTubeVideoId, getYouTubeThumbnailUrl} from '../utils/youtube';
+import {parsePropertyVideoUrl} from '../utils/video';
 import {optimizePropertyImage} from '../utils/imageProcessor';
 import {
   getAuthorizedDocumentDownloadUrl,
@@ -49,10 +51,13 @@ import {
   uploadPropertyDocumentFile,
 } from '../services/storageService';
 import {validatePropertyForPublish} from '../services/propertyService';
-import {validateCanonicalSiteUrl} from '../utils/siteUrl';
+import {
+  getEffectiveCanonicalSiteUrl,
+  validateCanonicalSiteUrl,
+} from '../utils/siteUrl';
 import {PropertyImage} from './PropertyImage';
 import {StatusIndicator} from './StatusIndicator';
-import {YouTubePlayer} from './YouTubePlayer';
+import {PropertyVideoPlayer} from './PropertyVideoPlayer';
 
 interface AdminPropertyEditorProps {
   initialProperty: Property | null;
@@ -252,7 +257,9 @@ export function AdminPropertyEditor({
     ? computePricePerSqm(effectiveTotalPrice, numericArea)
     : numericRatePerSqm;
 
-  const canonicalCheck = validateCanonicalSiteUrl(siteSettings.canonicalSiteUrl);
+  const canonicalCheck = validateCanonicalSiteUrl(
+    getEffectiveCanonicalSiteUrl(siteSettings.canonicalSiteUrl)
+  );
 
   const buildPropertyInput = (targetVisibility: PropertyVisibility): PropertyInput => {
     const normalizedLotId = (isEditing && initialProperty ? initialProperty.lotId : lotId)
@@ -486,12 +493,17 @@ export function AdminPropertyEditor({
     setNewPhotoUrl('');
   };
 
+  const [previewVideoId, setPreviewVideoId] = useState<string | null>(null);
+  const parsedNewVideo = newVideoUrl.trim() ? parsePropertyVideoUrl(newVideoUrl) : null;
+
   const handleAddVideo = () => {
     const trimmed = newVideoUrl.trim();
     if (!trimmed) return;
-    const ytId = extractYouTubeVideoId(trimmed);
-    if (!ytId) {
-      setError('Enter a valid YouTube watch, share (youtu.be), unlisted, or embed URL.');
+    const parsed = parsePropertyVideoUrl(trimmed);
+    if (!parsed) {
+      setError(
+        'Enter a valid YouTube link (watch, youtu.be, shorts, unlisted) or Google Drive file sharing link (https://drive.google.com/file/d/.../view).'
+      );
       return;
     }
     setError('');
@@ -499,9 +511,11 @@ export function AdminPropertyEditor({
       ...prev,
       {
         id: `vid-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-        sourceType: 'youtube',
+        sourceType: parsed.provider,
         url: trimmed,
-        title: newVideoTitle.trim() || `Property Video ${prev.length + 1}`,
+        title:
+          newVideoTitle.trim() ||
+          `${parsed.providerLabel} Tour ${prev.length + 1}`,
         description: newVideoDesc.trim(),
         sortOrder: prev.length,
       },
@@ -592,11 +606,19 @@ export function AdminPropertyEditor({
       setError('Total selling price cannot be negative.');
       return;
     }
+    for (const vid of videos) {
+      if (!parsePropertyVideoUrl(vid.url)) {
+        setError(
+          `Invalid video URL "${vid.url}". Remove or replace it with a valid YouTube or Google Drive sharing URL.`
+        );
+        return;
+      }
+    }
 
     const input = buildPropertyInput(targetVisibility);
 
     if (targetVisibility === 'Published') {
-      const publishErrors = validatePropertyForPublish(input, siteSettings.canonicalSiteUrl);
+      const publishErrors = validatePropertyForPublish(input);
       if (publishErrors.length > 0) {
         setError(publishErrors.join(' '));
         return;
@@ -629,11 +651,11 @@ export function AdminPropertyEditor({
       )}
 
       {!canonicalCheck.valid && (
-        <div className="p-3.5 rounded-xl border border-amber-200 bg-amber-50 text-xs text-amber-950 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="p-3.5 rounded-xl border border-[#DCD0F0] bg-[#F3EEFA] text-xs text-[#311A4D] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="flex items-start gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <AlertTriangle className="w-4 h-4 text-[#6500B5] shrink-0 mt-0.5" />
             <p>
-              <strong>Publishing Guardrail:</strong> {canonicalCheck.reason} You can save this property as a <strong>Draft</strong> now, then configure your HTTPS production domain in Settings before publishing.
+              <strong>Development / Preview Mode:</strong> Creating, editing, publishing, photos, and videos work normally without <code className="font-mono">VITE_PUBLIC_SITE_URL</code>. Production QR downloads and printable QR signage remain disabled until a public HTTPS website URL is configured.
             </p>
           </div>
           <Link
@@ -1291,129 +1313,187 @@ export function AdminPropertyEditor({
         </div>
       </section>
 
-      {/* Section 5: Multiple Property Videos */}
+      {/* Section 5: Multiple Property Videos (YouTube & Google Drive) */}
       <section className="p-5 rounded-xl border border-[#E6E6EF] bg-white space-y-4">
         <div className="pb-3 border-b border-[#EFEFF6]">
           <h3 className="font-display text-sm font-bold text-[#202124]">
-            5. Property Videos ({videos.length}) · Public &amp; Unlisted YouTube Links
+            5. Property Videos ({videos.length}) · YouTube &amp; Google Drive Links
           </h3>
           <p className="text-xs text-[#696B77] mt-0.5">
-            Attach multiple drone flights, road access tours, or neighborhood walkthroughs with lazy-loaded playback.
+            Paste public or unlisted YouTube links or Google Drive video sharing links. Providers are detected automatically and rendered via lazy-loaded iframes.
           </p>
         </div>
 
+        <div className="p-3 rounded-lg border border-[#DCD0F0] bg-[#F8F8FC] text-[11px] text-[#311A4D]">
+          <strong>Google Drive sharing notice:</strong> Set the video file access in Google Drive to{' '}
+          <span className="font-semibold">&ldquo;Anyone with the link · Viewer&rdquo;</span> so buyers can play the embedded preview. Videos are never downloaded or duplicated onto this server.
+        </div>
+
         {videos.length > 0 && (
-          <div className="space-y-2.5">
+          <div className="space-y-3">
             {videos.map((vid, idx) => {
-              const ytId = extractYouTubeVideoId(vid.url);
+              const parsed = parsePropertyVideoUrl(vid.url);
+              const isDrive = parsed?.provider === 'google_drive';
+              const isPreviewing = previewVideoId === vid.id;
               return (
                 <div
                   key={vid.id}
-                  className="p-3 rounded-xl border border-[#E6E6EF] bg-[#F8F8FC] flex flex-col sm:flex-row gap-3 items-start"
+                  className="p-3 rounded-xl border border-[#E6E6EF] bg-[#F8F8FC] space-y-3"
                 >
-                  <div className="w-32 aspect-video rounded-md overflow-hidden bg-[#202124] shrink-0">
-                    {ytId ? (
-                      <img
-                        src={getYouTubeThumbnailUrl(ytId)}
-                        alt={vid.title}
-                        referrerPolicy="no-referrer"
-                        className="w-full h-full object-cover"
+                  <div className="flex flex-col sm:flex-row gap-3 items-start">
+                    <div className="w-36 aspect-video rounded-md overflow-hidden bg-[#202124] shrink-0 relative">
+                      {parsed?.thumbnailUrl ? (
+                        <img
+                          src={parsed.thumbnailUrl}
+                          alt={vid.title}
+                          referrerPolicy="no-referrer"
+                          className="w-full h-full object-cover"
+                        />
+                      ) : (
+                        <div className="w-full h-full bg-gradient-to-br from-[#241A3B] to-[#10169C] flex flex-col items-center justify-center text-white p-2 text-center">
+                          {isDrive ? (
+                            <HardDrive className="w-4 h-4 text-[#C5B3E6] mb-1" />
+                          ) : (
+                            <Video className="w-4 h-4 text-[#C5B3E6] mb-1" />
+                          )}
+                          <span className="text-[10px] font-mono leading-tight">
+                            {parsed ? parsed.providerLabel : 'Invalid URL'}
+                          </span>
+                        </div>
+                      )}
+                      {parsed && (
+                        <span className="absolute bottom-1 left-1 px-1.5 py-0.5 text-[10px] font-medium bg-black/75 text-white rounded">
+                          {parsed.providerLabel}
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-w-0 space-y-1.5 w-full">
+                      <input
+                        type="text"
+                        value={vid.title}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setVideos((prev) =>
+                            prev.map((item, i) => (i === idx ? {...item, title: val} : item))
+                          );
+                        }}
+                        placeholder="Video title..."
+                        className="w-full h-8 px-2.5 text-xs font-semibold bg-white border border-[#D6D6E4] rounded focus:outline-none focus:border-[#6500B5]"
                       />
-                    ) : (
-                      <div className="w-full h-full flex items-center justify-center text-white">
-                        <Video className="w-4 h-4" />
-                      </div>
-                    )}
+                      <input
+                        type="text"
+                        value={vid.description}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setVideos((prev) =>
+                            prev.map((item, i) => (i === idx ? {...item, description: val} : item))
+                          );
+                        }}
+                        placeholder="Short video description..."
+                        className="w-full h-8 px-2.5 text-xs bg-white border border-[#D6D6E4] rounded focus:outline-none focus:border-[#6500B5]"
+                      />
+                      <p className="text-[11px] font-mono text-[#696B77] truncate">
+                        {parsed
+                          ? `${parsed.providerLabel} ID: ${parsed.videoId} · ${parsed.embedUrl}`
+                          : `Invalid URL: ${vid.url}`}
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setPreviewVideoId((curr) => (curr === vid.id ? null : vid.id))
+                        }
+                        className="h-7 px-2 bg-white border border-[#D6D6E4] rounded inline-flex items-center gap-1 text-[11px] font-medium text-[#6500B5] hover:border-[#6500B5] cursor-pointer"
+                      >
+                        <Play className="w-3 h-3" />
+                        <span>{isPreviewing ? 'Hide' : 'Preview'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === 0}
+                        onClick={() => handleMoveVideo(idx, -1)}
+                        aria-label="Move video up"
+                        className="w-7 h-7 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                      >
+                        <ArrowUp className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={idx === videos.length - 1}
+                        onClick={() => handleMoveVideo(idx, 1)}
+                        aria-label="Move video down"
+                        className="w-7 h-7 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                      >
+                        <ArrowDown className="w-3.5 h-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setVideos((prev) => prev.filter((_, i) => i !== idx))}
+                        aria-label="Remove video"
+                        className="w-7 h-7 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center text-red-700 cursor-pointer"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
                   </div>
-                  <div className="flex-1 min-w-0 space-y-1.5">
-                    <input
-                      type="text"
-                      value={vid.title}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setVideos((prev) =>
-                          prev.map((item, i) => (i === idx ? {...item, title: val} : item))
-                        );
-                      }}
-                      className="w-full h-8 px-2.5 text-xs font-semibold bg-white border border-[#D6D6E4] rounded focus:outline-none focus:border-[#6500B5]"
-                    />
-                    <input
-                      type="text"
-                      value={vid.description}
-                      onChange={(e) => {
-                        const val = e.target.value;
-                        setVideos((prev) =>
-                          prev.map((item, i) => (i === idx ? {...item, description: val} : item))
-                        );
-                      }}
-                      placeholder="Short video description..."
-                      className="w-full h-8 px-2.5 text-xs bg-white border border-[#D6D6E4] rounded focus:outline-none focus:border-[#6500B5]"
-                    />
-                    <p className="text-[11px] font-mono text-[#696B77] truncate">{vid.url}</p>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
-                    <button
-                      type="button"
-                      disabled={idx === 0}
-                      onClick={() => handleMoveVideo(idx, -1)}
-                      aria-label="Move video up"
-                      className="w-7 h-7 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center disabled:opacity-40 cursor-pointer"
-                    >
-                      <ArrowUp className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={idx === videos.length - 1}
-                      onClick={() => handleMoveVideo(idx, 1)}
-                      aria-label="Move video down"
-                      className="w-7 h-7 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center disabled:opacity-40 cursor-pointer"
-                    >
-                      <ArrowDown className="w-3.5 h-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setVideos((prev) => prev.filter((_, i) => i !== idx))}
-                      aria-label="Remove video"
-                      className="w-7 h-7 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center text-red-700 cursor-pointer"
-                    >
-                      <Trash2 className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+
+                  {isPreviewing && (
+                    <div className="pt-2 border-t border-[#E6E6EF]">
+                      <PropertyVideoPlayer url={vid.url} title={vid.title} />
+                    </div>
+                  )}
                 </div>
               );
             })}
           </div>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
-          <input
-            type="url"
-            value={newVideoUrl}
-            onChange={(e) => setNewVideoUrl(e.target.value)}
-            placeholder="YouTube or unlisted YouTube URL (https://youtu.be/...)"
-            className="sm:col-span-5 h-9 px-3 text-xs border border-[#D6D6E4] rounded-md focus:outline-none focus:border-[#6500B5]"
-          />
-          <input
-            type="text"
-            value={newVideoTitle}
-            onChange={(e) => setNewVideoTitle(e.target.value)}
-            placeholder="Video title (e.g., Drone Boundary Flyover)"
-            className="sm:col-span-3 h-9 px-3 text-xs border border-[#D6D6E4] rounded-md focus:outline-none focus:border-[#6500B5]"
-          />
-          <input
-            type="text"
-            value={newVideoDesc}
-            onChange={(e) => setNewVideoDesc(e.target.value)}
-            placeholder="Brief description"
-            className="sm:col-span-2 h-9 px-3 text-xs border border-[#D6D6E4] rounded-md focus:outline-none focus:border-[#6500B5]"
-          />
-          <button
-            type="button"
-            onClick={handleAddVideo}
-            className="sm:col-span-2 h-9 px-3 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098] cursor-pointer"
-          >
-            + Add Video
-          </button>
+        <div className="space-y-2">
+          <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+            <input
+              type="url"
+              value={newVideoUrl}
+              onChange={(e) => setNewVideoUrl(e.target.value)}
+              placeholder="YouTube or Google Drive link (https://drive.google.com/file/d/.../view)"
+              className="sm:col-span-5 h-9 px-3 text-xs border border-[#D6D6E4] rounded-md focus:outline-none focus:border-[#6500B5]"
+            />
+            <input
+              type="text"
+              value={newVideoTitle}
+              onChange={(e) => setNewVideoTitle(e.target.value)}
+              placeholder="Video title (e.g., Drone Boundary Flyover)"
+              className="sm:col-span-3 h-9 px-3 text-xs border border-[#D6D6E4] rounded-md focus:outline-none focus:border-[#6500B5]"
+            />
+            <input
+              type="text"
+              value={newVideoDesc}
+              onChange={(e) => setNewVideoDesc(e.target.value)}
+              placeholder="Brief description"
+              className="sm:col-span-2 h-9 px-3 text-xs border border-[#D6D6E4] rounded-md focus:outline-none focus:border-[#6500B5]"
+            />
+            <button
+              type="button"
+              onClick={handleAddVideo}
+              className="sm:col-span-2 h-9 px-3 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098] cursor-pointer"
+            >
+              + Add Video
+            </button>
+          </div>
+
+          {newVideoUrl.trim() && (
+            <p
+              className={`text-[11px] font-mono ${
+                parsedNewVideo ? 'text-[#6500B5]' : 'text-red-700'
+              }`}
+            >
+              {parsedNewVideo
+                ? `Detected ${parsedNewVideo.providerLabel} (${parsedNewVideo.videoId}) → Embed: ${parsedNewVideo.embedUrl}`
+                : 'Unrecognized or unsupported video URL. Use a valid YouTube link or Google Drive /file/d/<ID>/view sharing link.'}
+            </p>
+          )}
         </div>
 
         {/* Disabled Direct Video Upload Placeholder */}
@@ -1791,14 +1871,16 @@ export function AdminPropertyEditor({
               <p className="text-sm text-[#4B4D57] leading-relaxed">{previewData.description}</p>
 
               {previewData.videos.length > 0 && (
-                <div className="space-y-3">
+                <div className="space-y-4">
                   <h4 className="font-display text-sm font-bold text-[#202124]">
                     Attached Videos ({previewData.videos.length})
                   </h4>
-                  <YouTubePlayer
-                    url={previewData.videos[0].url}
-                    title={previewData.videos[0].title}
-                  />
+                  {previewData.videos.map((v) => (
+                    <div key={v.id} className="space-y-1.5">
+                      <p className="text-xs font-semibold text-[#202124]">{v.title}</p>
+                      <PropertyVideoPlayer url={v.url} title={v.title} />
+                    </div>
+                  ))}
                 </div>
               )}
 

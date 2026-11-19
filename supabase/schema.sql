@@ -103,7 +103,7 @@ create table if not exists public.property_images (
 create table if not exists public.property_videos (
   id uuid primary key default gen_random_uuid(),
   property_id uuid not null references public.properties(id) on delete cascade,
-  source_type text not null default 'youtube' check (source_type in ('youtube', 'direct')),
+  source_type text not null default 'youtube' check (source_type in ('youtube', 'google_drive', 'direct')),
   youtube_url text not null default '',
   title text not null default '',
   description text not null default '',
@@ -240,7 +240,18 @@ create policy "Admin manage property documents"
 drop policy if exists "Public insert inquiries" on public.inquiries;
 create policy "Public insert inquiries"
   on public.inquiries for insert
-  with check (status = 'New');
+  with check (
+    status = 'New'
+    and (
+      property_lot_id is null
+      or exists (
+        select 1 from public.properties p
+        where p.lot_id = property_lot_id
+          and p.visibility = 'Published'
+          and p.is_archived = false
+      )
+    )
+  );
 
 drop policy if exists "Admin manage inquiries" on public.inquiries;
 create policy "Admin manage inquiries"
@@ -252,7 +263,11 @@ insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_typ
 values
   ('property-media-public', 'property-media-public', true, 10485760, array['image/jpeg', 'image/png', 'image/webp', 'application/pdf']),
   ('property-media-private', 'property-media-private', false, 20971520, array['image/jpeg', 'image/png', 'image/webp', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'])
-on conflict (id) do nothing;
+on conflict (id) do update
+set
+  public = excluded.public,
+  file_size_limit = excluded.file_size_limit,
+  allowed_mime_types = excluded.allowed_mime_types;
 
 drop policy if exists "Public read approved media bucket" on storage.objects;
 create policy "Public read approved media bucket"

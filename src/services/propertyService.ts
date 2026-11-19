@@ -17,7 +17,11 @@ import type {
   SiteSettings,
 } from '../types/property';
 import {computePricePerSqm} from '../utils/format';
-import {validateCanonicalSiteUrl} from '../utils/siteUrl';
+import {parsePropertyVideoUrl} from '../utils/video';
+import {
+  promoteImageToPublicBucket,
+  refreshPrivateImageSignedUrl,
+} from './storageService';
 
 const PROPERTIES_STORAGE_KEY = 'amihan_demo_properties_v2';
 const INQUIRIES_STORAGE_KEY = 'amihan_demo_inquiries_v1';
@@ -59,14 +63,14 @@ export function normalizeProperty(raw: Partial<Property> & {id: string; lotId: s
   const orderedPhotos =
     images.length > 0 ? images.map((img) => img.url) : raw.photos || [];
 
-  const videos: PropertyVideoItem[] =
+  const rawVideos: PropertyVideoItem[] =
     raw.videos && raw.videos.length > 0
       ? [...raw.videos].sort((a, b) => a.sortOrder - b.sortOrder)
       : raw.youtubeUrl
         ? [
             {
               id: `vid-${raw.lotId}-0`,
-              sourceType: 'youtube',
+              sourceType: parsePropertyVideoUrl(raw.youtubeUrl)?.provider || 'youtube',
               url: raw.youtubeUrl,
               title: `${raw.title || raw.lotId} Video Tour`,
               description: '',
@@ -74,6 +78,15 @@ export function normalizeProperty(raw: Partial<Property> & {id: string; lotId: s
             },
           ]
         : [];
+
+  const videos: PropertyVideoItem[] = rawVideos.map((v, idx) => {
+    const parsed = parsePropertyVideoUrl(v.url);
+    return {
+      ...v,
+      sourceType: parsed ? parsed.provider : v.sourceType,
+      sortOrder: v.sortOrder ?? idx,
+    };
+  });
 
   return {
     id: raw.id,
@@ -126,16 +139,9 @@ export function normalizeProperty(raw: Partial<Property> & {id: string; lotId: s
 
 export function validatePropertyForPublish(
   input: PropertyInput,
-  canonicalSiteUrl: string
+  _canonicalSiteUrl?: string
 ): string[] {
   const errors: string[] = [];
-  const urlCheck = validateCanonicalSiteUrl(canonicalSiteUrl);
-  if (!urlCheck.valid) {
-    errors.push(
-      urlCheck.reason ||
-        'Configure a canonical production domain in Admin → Settings before publishing.'
-    );
-  }
   if (!input.lotId.trim()) errors.push('Unique Lot ID is required.');
   if (!input.title.trim()) errors.push('Property title is required.');
   if (!input.city.trim() || !input.province.trim()) {
@@ -153,7 +159,33 @@ export function validatePropertyForPublish(
   if ((!input.images || input.images.length === 0) && (!input.photos || input.photos.length === 0)) {
     errors.push('At least one property photo is required before publishing.');
   }
+  for (const vid of input.videos || []) {
+    if (!parsePropertyVideoUrl(vid.url)) {
+      errors.push(
+        `Invalid video URL (${vid.url || 'empty'}). Only YouTube and Google Drive links are supported.`
+      );
+    }
+  }
+  if (input.youtubeUrl && !parsePropertyVideoUrl(input.youtubeUrl)) {
+    errors.push('Primary video URL is invalid. Use a valid YouTube or Google Drive link.');
+  }
   return errors;
+}
+
+function validateAndNormalizeVideos(videos: PropertyVideoItem[] = []): PropertyVideoItem[] {
+  return videos.map((v, idx) => {
+    const parsed = parsePropertyVideoUrl(v.url);
+    if (!parsed) {
+      throw new Error(
+        `Invalid video URL "${v.url}". Only validated YouTube and Google Drive video links are permitted.`
+      );
+    }
+    return {
+      ...v,
+      sourceType: parsed.provider,
+      sortOrder: idx,
+    };
+  });
 }
 
 export function isPropertyPubliclyVisible(property: Pick<Property, 'visibility' | 'isArchived'>): boolean {
@@ -219,7 +251,7 @@ function readLocalSettings(): SiteSettings {
       ...DEFAULT_SITE_SETTINGS,
       ...parsed,
       canonicalSiteUrl:
-        parsed.canonicalSiteUrl ?? DEFAULT_SITE_SETTINGS.canonicalSiteUrl,
+        parsed.canonicalSiteUrl || DEFAULT_SITE_SETTINGS.canonicalSiteUrl,
     };
   } catch {
     return DEFAULT_SITE_SETTINGS;
@@ -287,7 +319,7 @@ interface SupabasePropertyRow {
   }>;
   property_videos?: Array<{
     id: string;
-    source_type: 'youtube' | 'direct';
+    source_type: 'youtube' | 'google_drive' | 'direct';
     youtube_url: string;
     title: string;
     description: string;
@@ -496,7 +528,77 @@ async function syncPropertyRelationsInSupabase(
   }
 }
 
+async function prepareImagesForVisibility(
+  images: PropertyImageItem[] = [],
+  visibility: PropertyVisibility
+): Promise<PropertyImageItem[]> {
+  if (!isSupabaseConfigured || !supabase || visibility !== 'Published') {
+    return images;
+  }
+  return Promise.all(
+    images.map(async (img) => {
+      if (img.storagePath && img.storageBucket === 'property-media-private') {
+        const publicUrl = await promoteImageToPublicBucket(img.storagePath);
+        if (publicUrl) {
+          return {
+            ...img,
+            url: publicUrl,
+            storageBucket: 'property-media-public' as const,
+            isApprovedPublic: true,
+          };
+        }
+      }
+      return img;
+    })
+  );
+}
+
+async function refreshPrivateImagesForAdmin(properties: Property[]): Promise<Property[]> {
+  if (!isSupabaseConfigured || !supabase) return properties;
+  return Promise.all(
+    properties.map(async (prop) => {
+      const hasPrivate = prop.images.some(
+        (img) => img.storageBucket === 'property-media-private' && img.storagePath
+      );
+      if (!hasPrivate) return prop;
+      const refreshedImages = await Promise.all(
+        prop.images.map(async (img) => {
+          if (img.storageBucket === 'property-media-private' && img.storagePath) {
+            const signed = await refreshPrivateImageSignedUrl(img.storagePath);
+            if (signed) return {...img, url: signed};
+          }
+          return img;
+        })
+      );
+      return normalizeProperty({
+        ...prop,
+        images: refreshedImages,
+        photos: refreshedImages.map((i) => i.url),
+      });
+    })
+  );
+}
+
 export const propertyService = {
+  async checkCurrentUserAdminRole(userId: string): Promise<{
+    isAuthorized: boolean;
+    role: 'admin' | 'super_admin' | null;
+  }> {
+    if (!isSupabaseConfigured || !supabase || !userId) {
+      return {isAuthorized: false, role: null};
+    }
+    const {data, error} = await supabase
+      .from('admin_users')
+      .select('role, is_active')
+      .eq('user_id', userId)
+      .maybeSingle();
+    if (error || !data || !data.is_active) {
+      return {isAuthorized: false, role: null};
+    }
+    const role = data.role === 'super_admin' ? 'super_admin' : 'admin';
+    return {isAuthorized: true, role};
+  },
+
   async listProperties(includeUnpublished = false): Promise<Property[]> {
     if (isSupabaseConfigured && supabase) {
       let query = supabase
@@ -508,7 +610,8 @@ export const propertyService = {
       }
       const {data, error} = await query;
       if (error) throw new Error(error.message);
-      return (data as SupabasePropertyRow[]).map(mapRowToProperty);
+      const mapped = (data as SupabasePropertyRow[]).map(mapRowToProperty);
+      return includeUnpublished ? refreshPrivateImagesForAdmin(mapped) : mapped;
     }
 
     const items = readDemoProperties();
@@ -517,13 +620,21 @@ export const propertyService = {
 
   async createProperty(input: PropertyInput): Promise<Property> {
     const normalizedLotId = input.lotId.trim().toUpperCase();
+    const validatedVideos = validateAndNormalizeVideos(input.videos || []);
+    const preparedImages = await prepareImagesForVisibility(
+      input.images || [],
+      input.visibility
+    );
     const preparedInput: PropertyInput = {
       ...input,
       lotId: normalizedLotId,
       isArchived: input.visibility === 'Archived' || input.isArchived,
+      images: preparedImages,
+      videos: validatedVideos,
+      youtubeUrl: validatedVideos[0]?.url || '',
       photos:
-        input.images && input.images.length > 0
-          ? sortImagesCoverFirst(input.images).map((img) => img.url)
+        preparedImages.length > 0
+          ? sortImagesCoverFirst(preparedImages).map((img) => img.url)
           : input.photos,
     };
 
@@ -557,6 +668,8 @@ export const propertyService = {
   },
 
   async updateProperty(id: string, input: PropertyInput): Promise<Property> {
+    const validatedVideos = validateAndNormalizeVideos(input.videos || []);
+
     if (isSupabaseConfigured && supabase) {
       // Preserve immutable Lot ID on existing property so QR codes never break
       const {data: existingRow, error: fetchErr} = await supabase
@@ -567,10 +680,21 @@ export const propertyService = {
       if (fetchErr) throw new Error(fetchErr.message);
 
       const lockedLotId = existingRow.lot_id;
+      const preparedImages = await prepareImagesForVisibility(
+        input.images || [],
+        input.visibility
+      );
       const preparedInput: PropertyInput = {
         ...input,
         lotId: lockedLotId,
         isArchived: input.visibility === 'Archived' || input.isArchived,
+        images: preparedImages,
+        photos:
+          preparedImages.length > 0
+            ? sortImagesCoverFirst(preparedImages).map((img) => img.url)
+            : input.photos,
+        videos: validatedVideos,
+        youtubeUrl: validatedVideos[0]?.url || '',
       };
 
       const {data, error} = await supabase
@@ -601,6 +725,8 @@ export const propertyService = {
       lotId: lockedLotId,
       id,
       isArchived: input.visibility === 'Archived' || input.isArchived,
+      videos: validatedVideos,
+      youtubeUrl: validatedVideos[0]?.url || '',
       updatedAt: new Date().toISOString(),
     });
     const next = existing.map((item) => (item.id === id ? updated : item));
@@ -618,6 +744,32 @@ export const propertyService = {
       };
       if (visibility === 'Published') {
         updatePayload.published_at = new Date().toISOString();
+        const {data: imgRows} = await supabase
+          .from('property_images')
+          .select('id, storage_bucket, storage_path, public_url')
+          .eq('property_id', id);
+        if (imgRows && imgRows.length > 0) {
+          const promotedUrls: string[] = [];
+          for (const row of imgRows) {
+            let finalUrl = row.public_url as string;
+            if (row.storage_bucket === 'property-media-private' && row.storage_path) {
+              const promoted = await promoteImageToPublicBucket(row.storage_path);
+              if (promoted) finalUrl = promoted;
+            }
+            promotedUrls.push(finalUrl);
+            await supabase
+              .from('property_images')
+              .update({
+                storage_bucket: 'property-media-public',
+                is_approved_public: true,
+                public_url: finalUrl,
+              })
+              .eq('id', row.id);
+          }
+          if (promotedUrls.length > 0) {
+            updatePayload.photos = promotedUrls;
+          }
+        }
       }
       const {error} = await supabase
         .from('properties')
@@ -739,32 +891,29 @@ export const propertyService = {
     payload: Omit<BuyerInquiry, 'id' | 'status' | 'createdAt'>
   ): Promise<BuyerInquiry> {
     if (isSupabaseConfigured && supabase) {
-      const {data, error} = await supabase
-        .from('inquiries')
-        .insert({
-          property_lot_id: payload.propertyLotId,
-          property_title: payload.propertyTitle,
-          buyer_name: payload.buyerName,
-          buyer_email: payload.buyerEmail,
-          buyer_phone: payload.buyerPhone,
-          preferred_date: payload.preferredDate || null,
-          message: payload.message,
-          status: 'New',
-        })
-        .select()
-        .single();
+      // Do NOT call .select().single() after public INSERT because anon intentionally has no SELECT RLS on inquiries
+      const {error} = await supabase.from('inquiries').insert({
+        property_lot_id: payload.propertyLotId,
+        property_title: payload.propertyTitle,
+        buyer_name: payload.buyerName,
+        buyer_email: payload.buyerEmail,
+        buyer_phone: payload.buyerPhone,
+        preferred_date: payload.preferredDate || null,
+        message: payload.message,
+        status: 'New',
+      });
       if (error) throw new Error(error.message);
       return {
-        id: data.id,
-        propertyLotId: data.property_lot_id,
-        propertyTitle: data.property_title,
-        buyerName: data.buyer_name,
-        buyerEmail: data.buyer_email,
-        buyerPhone: data.buyer_phone,
-        preferredDate: data.preferred_date || undefined,
-        message: data.message,
-        status: data.status,
-        createdAt: data.created_at,
+        id: `inq-${Date.now()}`,
+        propertyLotId: payload.propertyLotId,
+        propertyTitle: payload.propertyTitle,
+        buyerName: payload.buyerName,
+        buyerEmail: payload.buyerEmail,
+        buyerPhone: payload.buyerPhone,
+        preferredDate: payload.preferredDate,
+        message: payload.message,
+        status: 'New',
+        createdAt: new Date().toISOString(),
       };
     }
 

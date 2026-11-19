@@ -21,7 +21,7 @@ import {
 import {usePropertyStore} from '../context/PropertyStoreContext';
 import {PropertyImage} from '../components/PropertyImage';
 import {StatusIndicator} from '../components/StatusIndicator';
-import {YouTubePlayer} from '../components/YouTubePlayer';
+import {PropertyVideoPlayer} from '../components/PropertyVideoPlayer';
 import {QRCodeCanvas} from '../components/QRCodeCanvas';
 import {InquiryForm} from '../components/InquiryForm';
 import {ShareListingButton} from '../components/ShareListingButton';
@@ -37,6 +37,8 @@ import {
   formatSqm,
   getPropertyPermalink,
 } from '../utils/format';
+import {parsePropertyVideoUrl} from '../utils/video';
+import {buildDistributableQrUrl} from '../utils/siteUrl';
 
 export function PropertyDetailPage() {
   const {lotId = ''} = useParams();
@@ -44,7 +46,7 @@ export function PropertyDetailPage() {
   const {
     getByLotId,
     isLoading,
-    siteSettings,
+    effectiveCanonicalSiteUrl,
     canonicalUrlValidation,
     session,
     isDemoMode,
@@ -120,11 +122,13 @@ export function PropertyDetailPage() {
   const currentPhoto = currentImage?.url || '';
   const pricePerSqm =
     property.pricePerSqm || computePricePerSqm(property.priceTotalPhp, property.lotAreaSqm);
-  const permalink = getPropertyPermalink(property.lotId, siteSettings.canonicalSiteUrl);
+  const qrTargetUrl =
+    buildDistributableQrUrl(effectiveCanonicalSiteUrl, property.lotId) || '';
+  const permalink = getPropertyPermalink(property.lotId, effectiveCanonicalSiteUrl);
   const shareUrl = canonicalUrlValidation.valid
-    ? permalink
+    ? qrTargetUrl || permalink
     : typeof window !== 'undefined'
-      ? window.location.href
+      ? `${window.location.origin}/property/${encodeURIComponent(property.lotId)}`
       : permalink;
 
   const videos =
@@ -223,13 +227,25 @@ export function PropertyDetailPage() {
               shareUrl={shareUrl}
               messengerHandle={property.agentMessenger}
             />
-            <Link
-              to={`/signage/${encodeURIComponent(property.lotId)}`}
-              className="inline-flex items-center gap-1.5 font-medium text-[#6500B5] hover:underline whitespace-nowrap shrink-0"
-            >
-              <Printer className="w-3.5 h-3.5" />
-              <span>Print QR Sign</span>
-            </Link>
+            {canonicalUrlValidation.valid ? (
+              <Link
+                to={`/signage/${encodeURIComponent(property.lotId)}`}
+                className="inline-flex items-center gap-1.5 font-medium text-[#6500B5] hover:underline whitespace-nowrap shrink-0"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Print QR Sign</span>
+              </Link>
+            ) : (
+              <button
+                type="button"
+                disabled
+                title="Configure VITE_PUBLIC_SITE_URL or a public HTTPS domain in Settings to enable printable QR signage."
+                className="inline-flex items-center gap-1.5 font-medium text-[#696B77] opacity-60 cursor-not-allowed whitespace-nowrap shrink-0"
+              >
+                <Printer className="w-3.5 h-3.5" />
+                <span>Print Sign Disabled</span>
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -491,37 +507,36 @@ export function PropertyDetailPage() {
               </div>
 
               {videos.length === 0 ? (
-                <YouTubePlayer url="" title={property.title} posterFallback={currentPhoto} />
+                <PropertyVideoPlayer url="" title={property.title} posterFallback={currentPhoto} />
               ) : (
                 <div className="space-y-6">
-                  {videos.map((vid) => (
-                    <div key={vid.id} className="space-y-2">
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <h3 className="text-sm font-semibold text-[#202124]">
-                            {vid.title || `${property.title} Video`}
-                          </h3>
-                          {vid.description && (
-                            <p className="text-xs text-[#696B77]">{vid.description}</p>
+                  {videos.map((vid) => {
+                    const parsed = parsePropertyVideoUrl(vid.url);
+                    return (
+                      <div key={vid.id} className="space-y-2">
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <h3 className="text-sm font-semibold text-[#202124]">
+                              {vid.title || `${property.title} Video`}
+                            </h3>
+                            {vid.description && (
+                              <p className="text-xs text-[#696B77]">{vid.description}</p>
+                            )}
+                          </div>
+                          {parsed && (
+                            <span className="font-mono text-[11px] font-medium text-[#10169C] bg-[#F3EEFA] px-2 py-0.5 rounded shrink-0">
+                              {parsed.providerLabel}
+                            </span>
                           )}
                         </div>
-                        <a
-                          href={vid.url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="inline-flex items-center gap-1 text-xs font-medium text-[#6500B5] hover:underline shrink-0"
-                        >
-                          <span>YouTube</span>
-                          <ExternalLink className="w-3.5 h-3.5" />
-                        </a>
+                        <PropertyVideoPlayer
+                          url={vid.url}
+                          title={vid.title || property.title}
+                          posterFallback={currentPhoto}
+                        />
                       </div>
-                      <YouTubePlayer
-                        url={vid.url}
-                        title={vid.title || property.title}
-                        posterFallback={currentPhoto}
-                      />
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </section>
@@ -670,18 +685,30 @@ export function PropertyDetailPage() {
                     Links permanently to /property/{property.lotId}
                   </p>
                 </div>
-                <Link
-                  to={`/signage/${encodeURIComponent(property.lotId)}`}
-                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6500B5] bg-[#F3EEFA] rounded-md hover:bg-[#E8DDF7] transition-colors whitespace-nowrap"
-                >
-                  <Printer className="w-3.5 h-3.5" />
-                  <span>Printable Sign</span>
-                </Link>
+                {canonicalUrlValidation.valid ? (
+                  <Link
+                    to={`/signage/${encodeURIComponent(property.lotId)}`}
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6500B5] bg-[#F3EEFA] rounded-md hover:bg-[#E8DDF7] transition-colors whitespace-nowrap"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Printable Sign</span>
+                  </Link>
+                ) : (
+                  <button
+                    type="button"
+                    disabled
+                    title="Configure VITE_PUBLIC_SITE_URL or a public HTTPS domain in Settings to enable printable QR signage."
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#696B77] bg-[#F8F8FC] border border-[#E6E6EF] rounded-md opacity-70 cursor-not-allowed whitespace-nowrap"
+                  >
+                    <Printer className="w-3.5 h-3.5" />
+                    <span>Signage Disabled</span>
+                  </button>
+                )}
               </div>
 
               <div className="flex flex-col items-center py-2">
                 <QRCodeCanvas
-                  url={permalink}
+                  url={qrTargetUrl}
                   lotId={property.lotId}
                   size={172}
                   canonicalValid={canonicalUrlValidation.valid}
@@ -692,7 +719,7 @@ export function PropertyDetailPage() {
               <div className="mt-4 pt-4 border-t border-[#EFEFF6]">
                 <div className="flex items-center justify-between gap-2 bg-[#F8F8FC] border border-[#E6E6EF] rounded-lg px-3 py-2">
                   <span className="text-xs font-mono text-[#4B4D57] truncate">
-                    {canonicalUrlValidation.valid ? permalink : `/property/${property.lotId}`}
+                    {canonicalUrlValidation.valid ? qrTargetUrl : `/property/${property.lotId}`}
                   </span>
                   <button
                     type="button"

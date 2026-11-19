@@ -44,7 +44,10 @@ export function getPropertyPath(lotId: string): string {
 
 export function getPropertyPermalink(lotId: string, canonicalSiteUrl?: string): string {
   if (canonicalSiteUrl) {
-    return buildCanonicalPropertyUrl(canonicalSiteUrl, lotId);
+    const canonical = buildCanonicalPropertyUrl(canonicalSiteUrl, lotId);
+    if (canonical.startsWith('https://')) {
+      return canonical;
+    }
   }
   if (typeof window === 'undefined') {
     return getPropertyPath(lotId);

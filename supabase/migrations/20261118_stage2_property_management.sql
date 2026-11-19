@@ -128,7 +128,7 @@ create table if not exists public.property_images (
 create table if not exists public.property_videos (
   id uuid primary key default gen_random_uuid(),
   property_id uuid not null references public.properties(id) on delete cascade,
-  source_type text not null default 'youtube' check (source_type in ('youtube', 'direct')),
+  source_type text not null default 'youtube' check (source_type in ('youtube', 'google_drive', 'direct')),
   youtube_url text not null default '',
   title text not null default '',
   description text not null default '',

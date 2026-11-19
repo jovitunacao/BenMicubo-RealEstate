@@ -22,7 +22,7 @@ export interface PropertyImageItem {
 
 export interface PropertyVideoItem {
   id: string;
-  sourceType: 'youtube' | 'direct';
+  sourceType: 'youtube' | 'google_drive' | 'direct';
   url: string;
   title: string;
   description: string;

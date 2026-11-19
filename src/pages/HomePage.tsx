@@ -8,7 +8,8 @@ import {PropertyImage} from '../components/PropertyImage';
 import {QRCodeCanvas} from '../components/QRCodeCanvas';
 import {InquiryForm} from '../components/InquiryForm';
 import {StatusIndicator} from '../components/StatusIndicator';
-import {computePricePerSqm, formatPhp, formatSqm, getPropertyPermalink} from '../utils/format';
+import {computePricePerSqm, formatPhp, formatSqm} from '../utils/format';
+import {buildDistributableQrUrl} from '../utils/siteUrl';
 import type {PropertyClassification, PropertyStatus} from '../types/property';
 
 type StatusFilter = 'All' | PropertyStatus;
@@ -18,7 +19,7 @@ type SortOption = 'lot' | 'price-asc' | 'price-desc' | 'area-desc';
 export function HomePage() {
   const {
     activeProperties,
-    siteSettings,
+    effectiveCanonicalSiteUrl,
     canonicalUrlValidation,
     isLoading,
     isDemoMode,
@@ -400,7 +401,7 @@ export function HomePage() {
                   02. Mobile-First Buyer Experience
                 </h3>
                 <p className="mt-1 text-sm text-[#4B4D57] leading-relaxed">
-                  Scanning from a phone opens photos, lot dimensions, road access, lazy-loaded YouTube drone footage, Google Maps pin links, and one-tap WhatsApp or Messenger contact.
+                  Scanning from a phone opens photos, lot dimensions, road access, lazy-loaded YouTube and Google Drive drone footage, Google Maps pin links, and one-tap WhatsApp or Messenger contact.
                 </p>
               </div>
               <div className="pt-4 border-t border-[#E6E6EF]">
@@ -422,10 +423,12 @@ export function HomePage() {
                   <span>{featuredProperty.lotId} Live Signage Preview</span>
                 </div>
                 <QRCodeCanvas
-                  url={getPropertyPermalink(
-                    featuredProperty.lotId,
-                    siteSettings.canonicalSiteUrl
-                  )}
+                  url={
+                    buildDistributableQrUrl(
+                      effectiveCanonicalSiteUrl,
+                      featuredProperty.lotId
+                    ) || ''
+                  }
                   lotId={featuredProperty.lotId}
                   size={176}
                   showDownloads={false}
@@ -445,12 +448,23 @@ export function HomePage() {
                   </div>
                 </div>
                 <div className="mt-5 flex flex-wrap justify-center gap-2.5 w-full">
-                  <Link
-                    to={`/signage/${encodeURIComponent(featuredProperty.lotId)}`}
-                    className="flex-1 min-w-[140px] py-2.5 px-4 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098] transition-colors whitespace-nowrap"
-                  >
-                    Open Print Signage
-                  </Link>
+                  {canonicalUrlValidation.valid ? (
+                    <Link
+                      to={`/signage/${encodeURIComponent(featuredProperty.lotId)}`}
+                      className="flex-1 min-w-[140px] py-2.5 px-4 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098] transition-colors whitespace-nowrap"
+                    >
+                      Open Print Signage
+                    </Link>
+                  ) : (
+                    <button
+                      type="button"
+                      disabled
+                      title="Configure VITE_PUBLIC_SITE_URL or a public HTTPS domain in Admin Settings before printing QR signage."
+                      className="flex-1 min-w-[140px] py-2.5 px-4 text-xs font-medium text-[#696B77] bg-[#F8F8FC] border border-[#D6D6E4] rounded-md opacity-70 cursor-not-allowed whitespace-nowrap"
+                    >
+                      Print Signage Disabled
+                    </button>
+                  )}
                   <Link
                     to={`/property/${encodeURIComponent(featuredProperty.lotId)}`}
                     className="flex-1 min-w-[140px] py-2.5 px-4 text-xs font-medium text-[#202124] bg-white border border-[#D6D6E4] rounded-md hover:bg-[#F8F8FC] transition-colors whitespace-nowrap"

@@ -4,6 +4,47 @@ import type {PropertyDocumentItem} from '../types/property';
 export const PUBLIC_MEDIA_BUCKET = 'property-media-public';
 export const PRIVATE_MEDIA_BUCKET = 'property-media-private';
 
+export const MAX_PUBLIC_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+export const MAX_PRIVATE_FILE_BYTES = 20 * 1024 * 1024; // 20 MB
+
+const ALLOWED_IMAGE_MIMES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+const ALLOWED_PUBLIC_DOC_MIMES = new Set([
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+const ALLOWED_PRIVATE_DOC_MIMES = new Set([
+  'application/pdf',
+  'application/msword',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+]);
+
+export function validateDocumentFile(
+  file: Pick<File, 'name' | 'size' | 'type'>,
+  visibility: 'Private' | 'Public'
+): void {
+  const maxBytes = visibility === 'Public' ? MAX_PUBLIC_FILE_BYTES : MAX_PRIVATE_FILE_BYTES;
+  const maxLabel = visibility === 'Public' ? '10 MB' : '20 MB';
+  if (!file.size || file.size > maxBytes) {
+    throw new Error(
+      `File "${file.name}" exceeds the ${maxLabel} limit for ${visibility.toLowerCase()} storage.`
+    );
+  }
+  const allowed =
+    visibility === 'Public' ? ALLOWED_PUBLIC_DOC_MIMES : ALLOWED_PRIVATE_DOC_MIMES;
+  if (!allowed.has(file.type)) {
+    throw new Error(
+      visibility === 'Public'
+        ? 'Public documents must be PDF, JPG, PNG, or WebP.'
+        : 'Private documents must be PDF, DOC, DOCX, JPG, PNG, or WebP.'
+    );
+  }
+}
+
 export async function uploadOptimizedPropertyImage(
   lotId: string,
   blob: Blob,
@@ -16,6 +57,13 @@ export async function uploadOptimizedPropertyImage(
   storageBucket: 'property-media-private' | 'property-media-public';
   storagePath: string;
 }> {
+  if (!ALLOWED_IMAGE_MIMES.has(mimeType)) {
+    throw new Error('Only JPG, PNG, and WebP images are supported.');
+  }
+  if (blob.size > MAX_PUBLIC_FILE_BYTES) {
+    throw new Error('Optimized image exceeds the 10 MB upload limit.');
+  }
+
   const bucket = isApprovedPublic ? PUBLIC_MEDIA_BUCKET : PRIVATE_MEDIA_BUCKET;
   const storagePath = `${lotId.toUpperCase()}/images/${Date.now()}-${fileName}`;
 
@@ -44,6 +92,39 @@ export async function uploadOptimizedPropertyImage(
   };
 }
 
+export async function promoteImageToPublicBucket(
+  storagePath: string
+): Promise<string | null> {
+  if (!isSupabaseConfigured || !supabase || !storagePath) return null;
+
+  const {data: fileBlob, error: downloadErr} = await supabase.storage
+    .from(PRIVATE_MEDIA_BUCKET)
+    .download(storagePath);
+  if (downloadErr || !fileBlob) return null;
+
+  const {error: uploadErr} = await supabase.storage
+    .from(PUBLIC_MEDIA_BUCKET)
+    .upload(storagePath, fileBlob, {
+      contentType: fileBlob.type || 'image/webp',
+      upsert: true,
+    });
+  if (uploadErr) return null;
+
+  const {data} = supabase.storage.from(PUBLIC_MEDIA_BUCKET).getPublicUrl(storagePath);
+  return data.publicUrl;
+}
+
+export async function refreshPrivateImageSignedUrl(
+  storagePath: string
+): Promise<string | null> {
+  if (!isSupabaseConfigured || !supabase || !storagePath) return null;
+  const {data, error} = await supabase.storage
+    .from(PRIVATE_MEDIA_BUCKET)
+    .createSignedUrl(storagePath, 3600);
+  if (error || !data) return null;
+  return data.signedUrl;
+}
+
 export async function uploadPropertyDocumentFile(
   lotId: string,
   file: File,
@@ -54,6 +135,8 @@ export async function uploadPropertyDocumentFile(
   publicUrl?: string;
   dataUrl?: string;
 }> {
+  validateDocumentFile(file, visibility);
+
   const bucket = visibility === 'Public' ? PUBLIC_MEDIA_BUCKET : PRIVATE_MEDIA_BUCKET;
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-');
   const storagePath = `${lotId.toUpperCase()}/documents/${Date.now()}-${safeName}`;
@@ -122,3 +205,4 @@ export async function getAuthorizedDocumentDownloadUrl(
 
   throw new Error('Document file is stored in private preview placeholder mode.');
 }
+

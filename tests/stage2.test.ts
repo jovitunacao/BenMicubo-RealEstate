@@ -1,8 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import QRCode from 'qrcode';
-import {buildCanonicalPropertyUrl, validateCanonicalSiteUrl} from '../src/utils/siteUrl';
-import {computeTotalPrice, generateNextLotId} from '../src/utils/format';
+import {
+  buildCanonicalPropertyUrl,
+  buildDistributableQrUrl,
+  getEffectiveCanonicalSiteUrl,
+  validateCanonicalSiteUrl,
+} from '../src/utils/siteUrl';
+import {computeTotalPrice, generateNextLotId, getPropertyPermalink} from '../src/utils/format';
 import {
   filterPublicDocuments,
   isPropertyPubliclyVisible,
@@ -11,6 +16,18 @@ import {
 } from '../src/services/propertyService';
 import {DEMO_PROPERTIES} from '../src/data/demoProperties';
 import type {PropertyDocumentItem, PropertyInput} from '../src/types/property';
+import {
+  extractGoogleDriveFileId,
+  extractYouTubeVideoId,
+  isValidPropertyVideoUrl,
+  parsePropertyVideoUrl,
+} from '../src/utils/video';
+import {
+  getAuthorizedDocumentDownloadUrl,
+  MAX_PRIVATE_FILE_BYTES,
+  MAX_PUBLIC_FILE_BYTES,
+  validateDocumentFile,
+} from '../src/services/storageService';
 
 // Provide minimal in-memory localStorage shim for Node test runner
 const memoryStorage = new Map<string, string>();
@@ -32,7 +49,7 @@ Object.defineProperty(globalThis, 'localStorage', {
 
 const PRODUCTION_SITE_URL = 'https://benmicuborealestate.pages.dev';
 
-test('Canonical production URL validation blocks localhost, http, and preview domains', () => {
+test('Canonical production URL validation and QR target builder block localhost, http, and preview domains', () => {
   assert.equal(validateCanonicalSiteUrl('').valid, false);
   assert.equal(validateCanonicalSiteUrl('http://benmicuborealestate.com').valid, false);
   assert.equal(validateCanonicalSiteUrl('https://localhost:3000').valid, false);
@@ -41,10 +58,35 @@ test('Canonical production URL validation blocks localhost, http, and preview do
     validateCanonicalSiteUrl('https://ais-dev-demo-123.asia-east1.run.app').valid,
     false
   );
+  assert.equal(
+    validateCanonicalSiteUrl('https://ais-pre-demo-123.us-central1.run.app').valid,
+    false
+  );
+  assert.equal(
+    validateCanonicalSiteUrl('https://preview-123.webcontainer.io').valid,
+    false
+  );
+
+  // Distributable QR URL must return null when URL is missing or temporary/dev
+  assert.equal(buildDistributableQrUrl('', 'LOT-001'), null);
+  assert.equal(buildDistributableQrUrl('https://localhost:3000', 'LOT-001'), null);
+  assert.equal(
+    buildDistributableQrUrl('https://ais-dev-demo.asia-east1.run.app', 'LOT-001'),
+    null
+  );
 
   const validCheck = validateCanonicalSiteUrl(`${PRODUCTION_SITE_URL}/`);
   assert.equal(validCheck.valid, true);
   assert.equal(validCheck.normalizedUrl, PRODUCTION_SITE_URL);
+  assert.equal(
+    buildDistributableQrUrl(`${PRODUCTION_SITE_URL}/`, 'LOT-001'),
+    `${PRODUCTION_SITE_URL}/property/LOT-001`
+  );
+  assert.equal(
+    getPropertyPermalink('LOT-001', PRODUCTION_SITE_URL),
+    `${PRODUCTION_SITE_URL}/property/LOT-001`
+  );
+  assert.equal(getEffectiveCanonicalSiteUrl(`${PRODUCTION_SITE_URL}/`), PRODUCTION_SITE_URL);
 });
 
 test('Two different properties generate distinct canonical URLs and distinct QR codes', async () => {
@@ -93,16 +135,17 @@ test('Updating a property price, description, or Sold status preserves its perma
   assert.equal(isPropertyPubliclyVisible(updated), true);
 });
 
-test('Publishing validation blocks empty or non-production URLs and missing required fields', () => {
+test('Property publishing works in dev/preview without VITE_PUBLIC_SITE_URL while enforcing required property fields and photos', () => {
   const sample = DEMO_PROPERTIES[0];
   const {id: _id, updatedAt: _u, ...validInput} = sample;
 
-  assert.ok(validatePropertyForPublish(validInput, 'https://localhost:3000').length > 0);
-  assert.ok(validatePropertyForPublish(validInput, '').length > 0);
+  // Missing or dev canonical URLs must NOT block property publishing
+  assert.equal(validatePropertyForPublish(validInput, '').length, 0);
+  assert.equal(validatePropertyForPublish(validInput, 'https://localhost:3000').length, 0);
   assert.equal(validatePropertyForPublish(validInput, PRODUCTION_SITE_URL).length, 0);
 
   const missingPhotos: PropertyInput = {...validInput, images: [], photos: []};
-  assert.ok(validatePropertyForPublish(missingPhotos, PRODUCTION_SITE_URL).length > 0);
+  assert.ok(validatePropertyForPublish(missingPhotos, '').length > 0);
 });
 
 test('Draft and Archived listings are hidden publicly, and Private documents are never exposed publicly', () => {
@@ -149,3 +192,219 @@ test('Price calculation and next Lot ID generator work accurately', () => {
     'LOT-008'
   );
 });
+
+test('YouTube regular, short, unlisted, and Shorts links are recognized and embedded safely', () => {
+  const regular = parsePropertyVideoUrl('https://www.youtube.com/watch?v=LXb3EKWsInQ');
+  const shortLink = parsePropertyVideoUrl('https://youtu.be/LXb3EKWsInQ?si=share123');
+  const shorts = parsePropertyVideoUrl('https://www.youtube.com/shorts/LXb3EKWsInQ');
+
+  assert.equal(regular?.provider, 'youtube');
+  assert.equal(regular?.videoId, 'LXb3EKWsInQ');
+  assert.equal(
+    regular?.embedUrl,
+    'https://www.youtube-nocookie.com/embed/LXb3EKWsInQ?autoplay=1&rel=0&modestbranding=1'
+  );
+  assert.equal(shortLink?.videoId, 'LXb3EKWsInQ');
+  assert.equal(shorts?.videoId, 'LXb3EKWsInQ');
+});
+
+test('Google Drive video links are recognized and converted to /preview iframe URLs', () => {
+  const shareUrl =
+    'https://drive.google.com/file/d/1AbCDefGhIjKlMnOpQrStUvWxYz123456/view?usp=sharing';
+  const openUrl =
+    'https://drive.google.com/open?id=1AbCDefGhIjKlMnOpQrStUvWxYz123456';
+  const previewUrl =
+    'https://drive.google.com/file/d/1AbCDefGhIjKlMnOpQrStUvWxYz123456/preview';
+
+  const parsedShare = parsePropertyVideoUrl(shareUrl);
+  assert.equal(parsedShare?.provider, 'google_drive');
+  assert.equal(parsedShare?.videoId, '1AbCDefGhIjKlMnOpQrStUvWxYz123456');
+  assert.equal(parsedShare?.embedUrl, previewUrl);
+  assert.equal(
+    parsedShare?.canonicalUrl,
+    'https://drive.google.com/file/d/1AbCDefGhIjKlMnOpQrStUvWxYz123456/view'
+  );
+  assert.equal(parsedShare?.thumbnailUrl, null);
+
+  assert.equal(
+    extractGoogleDriveFileId(openUrl),
+    '1AbCDefGhIjKlMnOpQrStUvWxYz123456'
+  );
+  assert.equal(
+    parsePropertyVideoUrl(previewUrl)?.embedUrl,
+    previewUrl
+  );
+});
+
+test('Invalid, non-provider, or arbitrary iframe URLs are rejected', async () => {
+  const invalidUrls = [
+    '',
+    'not-a-url',
+    'javascript:alert(1)',
+    'https://evil.example.com/embed/video',
+    'https://vimeo.com/123456789',
+    'https://drive.google.com/drive/folders/1AbCDefGhIjKlMnOpQrStUvWxYz',
+    'https://evil.com/youtube.com/watch?v=LXb3EKWsInQ',
+    'LXb3EKWsInQ',
+  ];
+
+  for (const url of invalidUrls) {
+    assert.equal(isValidPropertyVideoUrl(url), false, `Expected rejection for ${url}`);
+    assert.equal(extractYouTubeVideoId(url), null);
+    assert.equal(extractGoogleDriveFileId(url), null);
+  }
+
+  const reset = propertyService.resetDemoData();
+  const target = reset.properties[0];
+  const {id, updatedAt: _u, ...rest} = target;
+
+  await assert.rejects(
+    () =>
+      propertyService.updateProperty(id, {
+        ...rest,
+        videos: [
+          {
+            id: 'bad-vid',
+            sourceType: 'youtube',
+            url: 'https://evil.example.com/iframe',
+            title: 'Bad video',
+            description: '',
+            sortOrder: 0,
+          },
+        ],
+      }),
+    /Invalid video URL/
+  );
+});
+
+test('Multiple YouTube and Google Drive videos persist on a property without altering lotId or QR URL', async () => {
+  const reset = propertyService.resetDemoData();
+  const target = reset.properties[0];
+  const originalQrUrl = buildCanonicalPropertyUrl(PRODUCTION_SITE_URL, target.lotId);
+  const {id, updatedAt: _u, ...rest} = target;
+
+  const updated = await propertyService.updateProperty(id, {
+    ...rest,
+    videos: [
+      {
+        id: 'v-yt',
+        sourceType: 'youtube',
+        url: 'https://youtu.be/LXb3EKWsInQ',
+        title: 'Aerial Drone Flight (YouTube)',
+        description: '4K aerial flyover',
+        sortOrder: 0,
+      },
+      {
+        id: 'v-drive',
+        sourceType: 'youtube', // Deliberately mismatched to confirm normalization sets 'google_drive'
+        url: 'https://drive.google.com/file/d/1AbCDefGhIjKlMnOpQrStUvWxYz123456/view?usp=sharing',
+        title: 'Road Frontage Drive Tour (Google Drive)',
+        description: 'Unedited walkthrough video',
+        sortOrder: 1,
+      },
+    ],
+  });
+
+  assert.equal(updated.lotId, target.lotId);
+  assert.equal(
+    buildCanonicalPropertyUrl(PRODUCTION_SITE_URL, updated.lotId),
+    originalQrUrl
+  );
+  assert.equal(updated.videos.length, 2);
+  assert.equal(updated.videos[0].sourceType, 'youtube');
+  assert.equal(updated.videos[1].sourceType, 'google_drive');
+});
+
+test('Storage file validation enforces size/MIME restrictions and blocks unauthorized private document access', async () => {
+  assert.doesNotThrow(() =>
+    validateDocumentFile(
+      {name: 'brochure.pdf', size: 2048, type: 'application/pdf'},
+      'Public'
+    )
+  );
+  assert.doesNotThrow(() =>
+    validateDocumentFile(
+      {
+        name: 'deed.docx',
+        size: 4096,
+        type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      },
+      'Private'
+    )
+  );
+
+  assert.throws(
+    () =>
+      validateDocumentFile(
+        {name: 'contract.docx', size: 4096, type: 'application/msword'},
+        'Public'
+      ),
+    /Public documents must be PDF, JPG, PNG, or WebP/
+  );
+  assert.throws(
+    () =>
+      validateDocumentFile(
+        {name: 'huge.pdf', size: MAX_PUBLIC_FILE_BYTES + 1, type: 'application/pdf'},
+        'Public'
+      ),
+    /10 MB/
+  );
+
+  assert.throws(
+    () =>
+      validateDocumentFile(
+        {name: 'payload.html', size: 1024, type: 'text/html'},
+        'Private'
+      ),
+    /Private documents must be PDF, DOC, DOCX, JPG, PNG, or WebP/
+  );
+  assert.throws(
+    () =>
+      validateDocumentFile(
+        {name: 'oversize.pdf', size: MAX_PRIVATE_FILE_BYTES + 1, type: 'application/pdf'},
+        'Private'
+      ),
+    /20 MB/
+  );
+
+  const privateDoc: PropertyDocumentItem = {
+    id: 'doc-priv',
+    title: 'Owner TCT Copy',
+    category: 'Title Document',
+    visibility: 'Private',
+    storageBucket: 'property-media-private',
+    storagePath: 'LOT-001/documents/tct.pdf',
+    fileName: 'tct.pdf',
+    mimeType: 'application/pdf',
+    fileSizeBytes: 12000,
+    dataUrl: 'data:application/pdf;base64,JVBERi0xLjQ=',
+    uploadedAt: '2026-01-01T00:00:00.000Z',
+  };
+
+  await assert.rejects(
+    () => getAuthorizedDocumentDownloadUrl(privateDoc, false),
+    /Unauthorized/
+  );
+  const adminUrl = await getAuthorizedDocumentDownloadUrl(privateDoc, true);
+  assert.equal(adminUrl, privateDoc.dataUrl);
+});
+
+test('Buyer inquiry creation and status updates work cleanly in local service mode', async () => {
+  propertyService.resetDemoData();
+  const created = await propertyService.createInquiry({
+    propertyLotId: 'LOT-001',
+    propertyTitle: 'Sungay West Highland Ridge Lot',
+    buyerName: 'Maria Santos',
+    buyerEmail: 'maria.santos@example.ph',
+    buyerPhone: '+63 917 123 4567',
+    message: 'Requesting site tripping this Saturday morning.',
+  });
+  assert.equal(created.status, 'New');
+  assert.equal(created.propertyLotId, 'LOT-001');
+
+  await propertyService.updateInquiryStatus(created.id, 'Scheduled');
+  const all = await propertyService.listInquiries();
+  const found = all.find((item) => item.id === created.id);
+  assert.equal(found?.status, 'Scheduled');
+});
+

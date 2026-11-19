@@ -4,11 +4,12 @@ import {AlertTriangle, ArrowLeft, MapPin, Phone, Printer, Settings} from 'lucide
 import {usePropertyStore} from '../context/PropertyStoreContext';
 import {CompanyLogo} from '../components/CompanyLogo';
 import {QRCodeCanvas} from '../components/QRCodeCanvas';
-import {formatPhp, formatSqm, getPropertyPermalink} from '../utils/format';
+import {formatPhp, formatSqm} from '../utils/format';
+import {buildDistributableQrUrl} from '../utils/siteUrl';
 
 export function SignagePrintPage() {
   const {lotId = ''} = useParams();
-  const {getByLotId, siteSettings, canonicalUrlValidation} = usePropertyStore();
+  const {getByLotId, effectiveCanonicalSiteUrl, canonicalUrlValidation} = usePropertyStore();
   const property = getByLotId(lotId);
   const [showPriceOnSign, setShowPriceOnSign] = useState(false);
 
@@ -29,8 +30,9 @@ export function SignagePrintPage() {
     );
   }
 
-  const permalink = getPropertyPermalink(property.lotId, siteSettings.canonicalSiteUrl);
-  const canGeneratePrintQr = canonicalUrlValidation.valid;
+  const permalink =
+    buildDistributableQrUrl(effectiveCanonicalSiteUrl, property.lotId) || '';
+  const canGeneratePrintQr = canonicalUrlValidation.valid && Boolean(permalink);
 
   return (
     <main className="min-h-[calc(100vh-64px)] bg-[#F8F8FC] py-8 px-4 sm:px-6">
@@ -76,14 +78,14 @@ export function SignagePrintPage() {
             </div>
             <div>
               <h1 className="font-display text-xl font-bold text-[#202124]">
-                Printable QR Signage Blocked — Production Domain Required
+                Printable QR Signage Disabled — Public Website URL Required
               </h1>
               <p className="mt-1.5 text-sm text-[#4B4D57] leading-relaxed">
                 {canonicalUrlValidation.reason ||
-                  'A valid HTTPS canonical production website URL must be configured before generating permanent printable QR codes.'}
+                  'A valid HTTPS public website URL must be configured before generating QR codes or printable signage for distribution.'}
               </p>
               <p className="mt-2 text-xs text-[#696B77] leading-relaxed">
-                To prevent tarpaulin signboards from permanently encoding <code className="font-mono">localhost</code>, <code className="font-mono">127.0.0.1</code>, or temporary preview URLs, QR generation is disabled until you save your live domain (for example <code className="font-mono">https://benmicuborealestate.pages.dev</code>) in Admin Settings or <code className="font-mono">VITE_PUBLIC_SITE_URL</code>.
+                To ensure physical signage never encodes <code className="font-mono">localhost</code>, Google AI Studio preview links, or temporary development addresses, QR generation and printing stay disabled until you configure <code className="font-mono">VITE_PUBLIC_SITE_URL</code> or save your production HTTPS domain (for example <code className="font-mono">https://benmicuborealestate.pages.dev</code>) in Admin Settings.
               </p>
             </div>
           </div>

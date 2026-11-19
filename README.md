@@ -9,7 +9,7 @@ Mobile-first Philippine real estate property listing platform with permanent QR 
 - **Public Property Directory (`/`)**: Search by Lot ID, barangay, city, province, or classification (`Residential`, `Commercial`, `Agricultural`, `Beachfront`, `Other`); filter by availability (`Available`, `Reserved`, `Sold`).
 - **Permanent Property Dossiers (`/property/:lotId`)**:
   - Ordered photo galleries with captions & fullscreen lightbox
-  - Multiple YouTube videos (including unlisted links) with lazy-loaded playback
+  - Multiple YouTube (standard, `youtu.be`, Shorts, unlisted) and Google Drive (`/file/d/<ID>/view` → `/preview`) videos with lazy-loaded playback and direct fallback links
   - Full land specifications: area (sqm), price per sqm, total selling price, negotiable indicator, dimensions, boundaries, road access, utilities, terrain, nearby landmarks, title & tax declaration status, Google Maps GPS link
   - **Public-only** downloadable brochures/maps (`Private` admin documents are never displayed)
   - Direct WhatsApp, Messenger, Phone, Buyer Inquiry form, and **Share Listing** button (native mobile share, Copy Link, WhatsApp, Messenger, Viber, SMS)
@@ -42,7 +42,7 @@ VITE_PUBLIC_SITE_URL="https://benmicuborealestate.pages.dev"
 ## Supabase Setup (Manual Review & Execution)
 
 1. Open your Supabase project → **SQL Editor**.
-2. Review and execute `supabase/migrations/20261118_stage2_property_management.sql` (or `supabase/schema.sql`).
+2. Review and execute `supabase/migrations/20261118_stage2_property_management.sql` (or `supabase/schema.sql`). If updating an existing Stage 2 database to add `'google_drive'` video support, also run `supabase/migrations/20261118_google_drive_videos.sql`.
    - This idempotently creates/updates `admin_users`, `site_settings`, `properties`, `property_images`, `property_videos`, `property_documents`, `inquiries`, helper function `public.is_authorized_admin()`, Row-Level Security policies, and Storage buckets (`property-media-public` and `property-media-private`).
 3. Create an administrator account in **Supabase Authentication → Users**.
 4. Grant admin permissions by inserting that user's UUID into `public.admin_users`:
@@ -55,11 +55,15 @@ VITE_PUBLIC_SITE_URL="https://benmicuborealestate.pages.dev"
 
 ## Canonical Production Domain & QR Code Safety
 
-Permanent QR codes and printable signage are **blocked** whenever the canonical site URL is missing, uses `http://`, or points to `localhost`, `127.0.0.1`, `*.run.app`, or temporary preview URLs.
+`VITE_PUBLIC_SITE_URL` is **optional** during local development and Google AI Studio preview. Property creation, editing, publishing, photo management, and video management all work normally without it.
 
-Configure your live HTTPS production domain via either:
+To prevent physical tarpaulins from ever encoding `localhost`, Google AI Studio preview links (`*.run.app`), or temporary development addresses, **distributable QR-code downloads (PNG/SVG) and printable A4 QR signage remain disabled** whenever the public website URL is missing, uses `http://`, or points to a localhost/preview host.
+
+Once configured via either:
 - `VITE_PUBLIC_SITE_URL` environment variable (recommended for Cloudflare Pages builds), or
-- **Admin Dashboard → Settings → Canonical Production Website URL** (e.g., `https://benmicuborealestate.pages.dev`).
+- **Admin Dashboard → Settings → Canonical Production Website URL** (e.g., `https://benmicuborealestate.pages.dev`),
+
+the application consistently uses it for permanent property URLs (`/property/LOT-XXX`), QR codes, and share links.
 
 ---
 

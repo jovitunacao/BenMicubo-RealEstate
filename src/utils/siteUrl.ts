@@ -14,6 +14,13 @@ const DISALLOWED_HOST_PATTERNS = [
   /^ais-dev-/i,
   /^ais-pre-/i,
   /aistudio\.google\.com$/i,
+  /\.webcontainer\.io$/i,
+  /\.stackblitz\.io$/i,
+  /\.codesandbox\.io$/i,
+  /\.ngrok\.io$/i,
+  /\.ngrok-free\.app$/i,
+  /\.trycloudflare\.com$/i,
+  /\.loca\.lt$/i,
 ];
 
 export function validateCanonicalSiteUrl(rawUrl: string): CanonicalUrlValidation {
@@ -22,7 +29,8 @@ export function validateCanonicalSiteUrl(rawUrl: string): CanonicalUrlValidation
     return {
       valid: false,
       normalizedUrl: '',
-      reason: 'Canonical production website URL is not configured.',
+      reason:
+        'Public website URL (VITE_PUBLIC_SITE_URL) is not configured yet. Configure a valid HTTPS production domain before generating QR codes for distribution.',
     };
   }
 
@@ -33,7 +41,8 @@ export function validateCanonicalSiteUrl(rawUrl: string): CanonicalUrlValidation
     return {
       valid: false,
       normalizedUrl: '',
-      reason: 'Enter a valid full URL starting with https:// (e.g., https://benmicuborealestate.com).',
+      reason:
+        'Enter a valid full URL starting with https:// (e.g., https://benmicuborealestate.com).',
     };
   }
 
@@ -41,7 +50,7 @@ export function validateCanonicalSiteUrl(rawUrl: string): CanonicalUrlValidation
     return {
       valid: false,
       normalizedUrl: '',
-      reason: 'Canonical production URL must use https://.',
+      reason: 'Public website URL must use https:// for distributable QR codes.',
     };
   }
 
@@ -50,7 +59,7 @@ export function validateCanonicalSiteUrl(rawUrl: string): CanonicalUrlValidation
     return {
       valid: false,
       normalizedUrl: '',
-      reason: `Temporary, localhost, or preview host (${host}) cannot be used in permanent QR codes.`,
+      reason: `Temporary, localhost, or preview host (${host}) cannot be used in distributable QR codes.`,
     };
   }
 
@@ -73,6 +82,31 @@ export function buildCanonicalPropertyUrl(
   return `${validation.normalizedUrl}${path}`;
 }
 
+export function buildDistributableQrUrl(
+  canonicalSiteUrl: string,
+  lotId: string
+): string | null {
+  const validation = validateCanonicalSiteUrl(canonicalSiteUrl);
+  if (!validation.valid) {
+    return null;
+  }
+  const path = `/property/${encodeURIComponent(lotId.trim().toUpperCase())}`;
+  return `${validation.normalizedUrl}${path}`;
+}
+
 export function getEnvCanonicalSiteUrl(): string {
   return (import.meta.env?.VITE_PUBLIC_SITE_URL || '').trim();
 }
+
+export function getEffectiveCanonicalSiteUrl(settingsCanonicalUrl = ''): string {
+  const settingsTrimmed = settingsCanonicalUrl.trim();
+  if (validateCanonicalSiteUrl(settingsTrimmed).valid) {
+    return validateCanonicalSiteUrl(settingsTrimmed).normalizedUrl;
+  }
+  const envUrl = getEnvCanonicalSiteUrl();
+  if (validateCanonicalSiteUrl(envUrl).valid) {
+    return validateCanonicalSiteUrl(envUrl).normalizedUrl;
+  }
+  return settingsTrimmed || envUrl;
+}
+

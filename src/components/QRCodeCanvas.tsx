@@ -2,6 +2,7 @@ import {useEffect, useState} from 'react';
 import {Link} from 'react-router-dom';
 import QRCode from 'qrcode';
 import {AlertTriangle, Download, Settings} from 'lucide-react';
+import {validateCanonicalSiteUrl} from '../utils/siteUrl';
 
 interface QRCodeCanvasProps {
   url: string;
@@ -24,8 +25,11 @@ export function QRCodeCanvas({
   const [svgMarkup, setSvgMarkup] = useState<string>('');
   const [error, setError] = useState<string>('');
 
+  const urlCheck = validateCanonicalSiteUrl(url);
+  const isDistributable = canonicalValid && urlCheck.valid;
+
   useEffect(() => {
-    if (!canonicalValid) {
+    if (!isDistributable) {
       setDataUrl('');
       setSvgMarkup('');
       setError('');
@@ -72,20 +76,24 @@ export function QRCodeCanvas({
     return () => {
       active = false;
     };
-  }, [url, size, canonicalValid]);
+  }, [url, size, isDistributable]);
 
-  if (!canonicalValid) {
+  if (!isDistributable) {
     return (
       <div className="w-full p-4 rounded-xl border border-amber-200 bg-amber-50 text-left space-y-2.5">
         <div className="flex items-start gap-2.5">
           <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
           <div>
             <p className="text-xs font-semibold text-amber-950">
-              QR generation paused until canonical domain is configured
+              Public Website URL Required for QR Distribution
             </p>
             <p className="mt-1 text-xs text-amber-900 leading-relaxed">
               {blockedReason ||
-                'Permanent QR codes require an HTTPS production domain (never localhost or preview URLs).'}
+                urlCheck.reason ||
+                'Configure VITE_PUBLIC_SITE_URL or a valid HTTPS production domain before generating QR codes for distribution.'}
+            </p>
+            <p className="mt-1 text-[11px] text-amber-800 leading-relaxed">
+              QR downloads and printable signage are disabled in development/preview so codes never encode localhost or temporary preview URLs.
             </p>
           </div>
         </div>
@@ -94,7 +102,7 @@ export function QRCodeCanvas({
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098] transition-colors"
         >
           <Settings className="w-3.5 h-3.5" />
-          <span>Configure Domain in Admin</span>
+          <span>Configure Public URL</span>
         </Link>
       </div>
     );

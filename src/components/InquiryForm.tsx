@@ -7,6 +7,9 @@ interface InquiryFormProps {
   propertyTitle: string;
 }
 
+const INQUIRY_COOLDOWN_KEY = 'benmicubo_last_inquiry_ts';
+const COOLDOWN_MS = 30_000;
+
 export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
   const {submitInquiry, isDemoMode} = usePropertyStore();
 
@@ -14,6 +17,7 @@ export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
   const [buyerEmail, setBuyerEmail] = useState('');
   const [buyerPhone, setBuyerPhone] = useState('');
   const [preferredDate, setPreferredDate] = useState('');
+  const [websiteTrap, setWebsiteTrap] = useState('');
   const [message, setMessage] = useState(
     propertyLotId
       ? `I would like to request the title details and schedule a site viewing for ${propertyLotId} with BEN MICUBO REAL ESTATE SERVICES.`
@@ -27,13 +31,30 @@ export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
     e.preventDefault();
     setError('');
 
+    // Honeypot anti-abuse guard
+    if (websiteTrap.trim().length > 0) {
+      setSubmitted(true);
+      return;
+    }
+
+    try {
+      const lastTs = Number(sessionStorage.getItem(INQUIRY_COOLDOWN_KEY) || '0');
+      const remainingSec = Math.ceil((COOLDOWN_MS - (Date.now() - lastTs)) / 1000);
+      if (lastTs > 0 && remainingSec > 0) {
+        setError(`Please wait ${remainingSec} seconds before sending another inquiry.`);
+        return;
+      }
+    } catch {
+      // Ignore storage access errors in private browsing
+    }
+
     const cleanName = buyerName.trim();
     const cleanEmail = buyerEmail.trim();
     const cleanPhone = buyerPhone.trim();
     const cleanMessage = message.trim();
 
-    if (cleanName.length < 2) {
-      setError('Please enter your full name.');
+    if (cleanName.length < 2 || cleanName.length > 120) {
+      setError('Please enter your full name (2 to 120 characters).');
       return;
     }
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
@@ -44,8 +65,8 @@ export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
       setError('Please enter a valid Philippine mobile or landline number.');
       return;
     }
-    if (cleanMessage.length < 8) {
-      setError('Please add a brief message or viewing request.');
+    if (cleanMessage.length < 8 || cleanMessage.length > 2000) {
+      setError('Please add a brief message (8 to 2000 characters).');
       return;
     }
 
@@ -60,6 +81,11 @@ export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
         preferredDate: preferredDate || undefined,
         message: cleanMessage,
       });
+      try {
+        sessionStorage.setItem(INQUIRY_COOLDOWN_KEY, String(Date.now()));
+      } catch {
+        // Ignore storage errors
+      }
       setSubmitted(true);
       setBuyerName('');
       setBuyerEmail('');
@@ -113,6 +139,20 @@ export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
         </div>
       )}
 
+      {/* Bot honeypot trap (hidden from real users) */}
+      <div className="sr-only" aria-hidden="true">
+        <label htmlFor="inquiry-company-website">Website</label>
+        <input
+          id="inquiry-company-website"
+          type="text"
+          name="website"
+          tabIndex={-1}
+          autoComplete="off"
+          value={websiteTrap}
+          onChange={(e) => setWebsiteTrap(e.target.value)}
+        />
+      </div>
+
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label htmlFor="buyer-name" className="block text-xs font-medium text-[#4B4D57] mb-1.5">
@@ -122,6 +162,7 @@ export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
             id="buyer-name"
             type="text"
             required
+            maxLength={120}
             value={buyerName}
             onChange={(e) => setBuyerName(e.target.value)}
             placeholder="Juan Dela Cruz"
@@ -137,6 +178,7 @@ export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
             id="buyer-phone"
             type="tel"
             required
+            maxLength={32}
             value={buyerPhone}
             onChange={(e) => setBuyerPhone(e.target.value)}
             placeholder="+63 917 000 0000"
@@ -154,6 +196,7 @@ export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
             id="buyer-email"
             type="email"
             required
+            maxLength={160}
             value={buyerEmail}
             onChange={(e) => setBuyerEmail(e.target.value)}
             placeholder="buyer@email.ph"
@@ -183,6 +226,7 @@ export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
           id="buyer-message"
           rows={3}
           required
+          maxLength={2000}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="Request copy of TCT, payment terms, or site tripping schedule..."

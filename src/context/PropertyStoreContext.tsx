@@ -21,7 +21,10 @@ import type {
   PropertyVisibility,
   SiteSettings,
 } from '../types/property';
-import {validateCanonicalSiteUrl} from '../utils/siteUrl';
+import {
+  getEffectiveCanonicalSiteUrl,
+  validateCanonicalSiteUrl,
+} from '../utils/siteUrl';
 
 interface PropertyStoreValue {
   properties: Property[];
@@ -30,6 +33,7 @@ interface PropertyStoreValue {
   archivedProperties: Property[];
   inquiries: BuyerInquiry[];
   siteSettings: SiteSettings;
+  effectiveCanonicalSiteUrl: string;
   canonicalUrlValidation: ReturnType<typeof validateCanonicalSiteUrl>;
   isLoading: boolean;
   isDemoMode: boolean;
@@ -37,6 +41,8 @@ interface PropertyStoreValue {
   supabaseError: string | null;
   session: Session | null;
   authReady: boolean;
+  isAdminAuthorized: boolean;
+  adminRole: 'admin' | 'super_admin' | null;
   refreshAll: () => Promise<void>;
   getByLotId: (lotId: string) => Property | undefined;
   createProperty: (input: PropertyInput) => Promise<Property>;
@@ -65,11 +71,16 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
   const [isLoading, setIsLoading] = useState(true);
   const [session, setSession] = useState<Session | null>(null);
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
+  const [isAdminAuthorized, setIsAdminAuthorized] = useState(!isSupabaseConfigured);
+  const [adminRole, setAdminRole] = useState<'admin' | 'super_admin' | null>(null);
   const [supabaseError, setSupabaseError] = useState<string | null>(null);
   const [isUsingDemoFallback, setIsUsingDemoFallback] = useState(false);
 
   const isDemoMode = !isSupabaseConfigured || isUsingDemoFallback;
-  const canonicalUrlValidation = validateCanonicalSiteUrl(siteSettings.canonicalSiteUrl);
+  const effectiveCanonicalSiteUrl = getEffectiveCanonicalSiteUrl(
+    siteSettings.canonicalSiteUrl
+  );
+  const canonicalUrlValidation = validateCanonicalSiteUrl(effectiveCanonicalSiteUrl);
 
   const refreshAll = useCallback(async () => {
     setIsLoading(true);
@@ -79,6 +90,8 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
       setSiteSettings(settings);
 
       if (!isSupabaseConfigured) {
+        setIsAdminAuthorized(true);
+        setAdminRole('admin');
         const [propsList, inqList] = await Promise.all([
           propertyService.listProperties(true),
           propertyService.listInquiries(),
@@ -89,11 +102,21 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
         return;
       }
 
-      const propsList = await propertyService.listProperties(Boolean(session));
+      let authorizedAdmin = false;
+      let resolvedRole: 'admin' | 'super_admin' | null = null;
+      if (session?.user.id) {
+        const check = await propertyService.checkCurrentUserAdminRole(session.user.id);
+        authorizedAdmin = check.isAuthorized;
+        resolvedRole = check.role;
+      }
+      setIsAdminAuthorized(authorizedAdmin);
+      setAdminRole(resolvedRole);
+
+      const propsList = await propertyService.listProperties(authorizedAdmin);
       setProperties(propsList);
       setIsUsingDemoFallback(false);
 
-      if (session) {
+      if (authorizedAdmin) {
         try {
           const inqList = await propertyService.listInquiries();
           setInquiries(inqList);
@@ -267,16 +290,10 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
         throw new Error('Supabase database is not ready yet.');
       }
       if (visibility === 'Published') {
-        if (!canonicalUrlValidation.valid) {
-          throw new Error(
-            canonicalUrlValidation.reason ||
-              'Configure canonical production URL in Settings before publishing.'
-          );
-        }
         for (const id of ids) {
           const item = properties.find((p) => p.id === id);
           if (item) {
-            const errs = validatePropertyForPublish(item, siteSettings.canonicalSiteUrl);
+            const errs = validatePropertyForPublish(item);
             if (errs.length > 0) {
               throw new Error(`${item.lotId}: ${errs[0]}`);
             }
@@ -294,13 +311,7 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
         )
       );
     },
-    [
-      canonicalUrlValidation.reason,
-      canonicalUrlValidation.valid,
-      isUsingDemoFallback,
-      properties,
-      siteSettings.canonicalSiteUrl,
-    ]
+    [isUsingDemoFallback, properties]
   );
 
   const deleteProperty = useCallback(
@@ -385,6 +396,7 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
         archivedProperties,
         inquiries,
         siteSettings,
+        effectiveCanonicalSiteUrl,
         canonicalUrlValidation,
         isLoading,
         isDemoMode,
@@ -392,6 +404,8 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
         supabaseError,
         session,
         authReady,
+        isAdminAuthorized,
+        adminRole,
         refreshAll,
         getByLotId,
         createProperty,

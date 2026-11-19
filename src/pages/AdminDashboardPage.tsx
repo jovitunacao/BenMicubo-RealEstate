@@ -45,7 +45,7 @@ import {
   formatSqm,
   getPropertyPermalink,
 } from '../utils/format';
-import {validateCanonicalSiteUrl} from '../utils/siteUrl';
+import {buildDistributableQrUrl, validateCanonicalSiteUrl} from '../utils/siteUrl';
 import type {
   InquiryStatus,
   Property,
@@ -88,11 +88,14 @@ export function AdminDashboardPage() {
     archivedProperties,
     inquiries,
     siteSettings,
+    effectiveCanonicalSiteUrl,
     canonicalUrlValidation,
     isDemoMode,
     isUsingDemoFallback,
     supabaseError,
     session,
+    isAdminAuthorized,
+    adminRole,
     createProperty,
     updateProperty,
     setPropertyVisibility,
@@ -139,7 +142,7 @@ export function AdminDashboardPage() {
   const [errorMessage, setErrorMessage] = useState<string>('');
 
   // Settings form state
-  const [canonicalInput, setCanonicalInput] = useState(siteSettings.canonicalSiteUrl);
+  const [canonicalInput, setCanonicalInput] = useState(effectiveCanonicalSiteUrl);
   const [agentNameInput, setAgentNameInput] = useState(siteSettings.defaultAgentName);
   const [agentPhoneInput, setAgentPhoneInput] = useState(siteSettings.defaultAgentPhone);
   const [agentWhatsappInput, setAgentWhatsappInput] = useState(
@@ -151,12 +154,12 @@ export function AdminDashboardPage() {
   const [savingSettings, setSavingSettings] = useState(false);
 
   useEffect(() => {
-    setCanonicalInput(siteSettings.canonicalSiteUrl);
+    setCanonicalInput(effectiveCanonicalSiteUrl);
     setAgentNameInput(siteSettings.defaultAgentName);
     setAgentPhoneInput(siteSettings.defaultAgentPhone);
     setAgentWhatsappInput(siteSettings.defaultAgentWhatsapp);
     setAgentMessengerInput(siteSettings.defaultAgentMessenger);
-  }, [siteSettings]);
+  }, [siteSettings, effectiveCanonicalSiteUrl]);
 
   // Supabase Auth form state
   const [email, setEmail] = useState('');
@@ -291,10 +294,14 @@ export function AdminDashboardPage() {
   };
 
   const handleCopyCanonical = async (lotId: string) => {
-    const url = getPropertyPermalink(lotId, siteSettings.canonicalSiteUrl);
+    const url = getPropertyPermalink(lotId, effectiveCanonicalSiteUrl);
     try {
       await navigator.clipboard.writeText(url);
-      showToast(`Copied URL for ${lotId}: ${url}`);
+      showToast(
+        canonicalUrlValidation.valid
+          ? `Copied permanent URL for ${lotId}: ${url}`
+          : `Copied preview URL for ${lotId}: ${url}`
+      );
     } catch {
       // Clipboard blocked
     }
@@ -383,6 +390,40 @@ export function AdminDashboardPage() {
     );
   }
 
+  if (!isDemoMode && session && !isAdminAuthorized && !isUsingDemoFallback) {
+    return (
+      <main className="min-h-[calc(100vh-64px)] bg-[#F8F8FC] flex items-center justify-center px-4 py-12">
+        <div className="w-full max-w-md bg-white border border-red-200 rounded-xl p-6 sm:p-8 space-y-4">
+          <div className="flex items-center gap-3 pb-4 border-b border-[#E6E6EF]">
+            <CompanyLogo size="md" />
+            <div>
+              <p className="font-display text-xs font-bold text-[#202124]">
+                BEN MICUBO REAL ESTATE SERVICES
+              </p>
+              <p className="text-xs font-medium text-red-700 mt-0.5">
+                Unauthorized Administrator Account
+              </p>
+            </div>
+          </div>
+          <h1 className="font-display text-xl font-bold text-[#202124]">
+            Admin Role Required
+          </h1>
+          <p className="text-xs text-[#4B4D57] leading-relaxed">
+            Signed in as <code className="font-mono">{session.user.email}</code>, but this account does not have an active record in <code className="font-mono">public.admin_users</code>. Row-Level Security blocks write access.
+          </p>
+          <button
+            type="button"
+            onClick={() => void signOutSupabase()}
+            className="w-full h-10 inline-flex items-center justify-center gap-2 text-xs font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] cursor-pointer"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Sign Out</span>
+          </button>
+        </div>
+      </main>
+    );
+  }
+
   const newInquiryCount = inquiries.filter((i) => i.status === 'New').length;
   const availableCount = activeProperties.filter((p) => p.status === 'Available').length;
   const soldCount = properties.filter((p) => p.status === 'Sold').length;
@@ -446,10 +487,11 @@ export function AdminDashboardPage() {
               ) : (
                 <>
                   Edits persist in browser local storage. Configure{' '}
-                  <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">VITE_SUPABASE_URL</code>,{' '}
-                  <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">VITE_SUPABASE_ANON_KEY</code>, and{' '}
+                  <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">VITE_SUPABASE_URL</code> and{' '}
+                  <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">VITE_SUPABASE_ANON_KEY</code>{' '}
+                  for live Supabase persistence;{' '}
                   <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">VITE_PUBLIC_SITE_URL</code>{' '}
-                  for live production auth &amp; storage.
+                  is optional in dev/preview (required only for distributable QR codes &amp; signage).
                 </>
               )}
             </p>
@@ -471,7 +513,10 @@ export function AdminDashboardPage() {
       ) : (
         <div className="bg-white border-b border-[#E6E6EF]">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-2.5 flex items-center justify-between text-xs text-[#4B4D57]">
-            <span>Signed in as {session?.user.email}</span>
+            <span>
+              Signed in as {session?.user.email}
+              {adminRole ? ` (${adminRole})` : ''}
+            </span>
             <button
               type="button"
               onClick={() => void signOutSupabase()}
@@ -623,19 +668,22 @@ export function AdminDashboardPage() {
                     <div>
                       <h2 className="font-display text-sm font-bold text-[#202124]">
                         {canonicalUrlValidation.valid
-                          ? 'Canonical Production Domain Active'
-                          : 'Canonical Production Domain Required for Publishing & QR Signage'}
+                          ? 'Public Website URL Active for QR & Share Links'
+                          : 'Public Website URL Not Configured (QR Distribution Disabled)'}
                       </h2>
                       <p className="mt-1 text-xs text-[#4B4D57]">
                         {canonicalUrlValidation.valid ? (
                           <>
-                            Permanent property QR codes resolve to{' '}
+                            Permanent property URLs and QR codes resolve to{' '}
                             <code className="font-mono text-[#10169C]">
                               {canonicalUrlValidation.normalizedUrl}/property/LOT-XXX
                             </code>
                           </>
                         ) : (
-                          canonicalUrlValidation.reason
+                          <>
+                            {canonicalUrlValidation.reason}{' '}
+                            Property creation, editing, publishing, photos, and videos continue working normally in development/preview mode.
+                          </>
                         )}
                       </p>
                     </div>
@@ -959,13 +1007,24 @@ export function AdminDashboardPage() {
                                     <Eye className="w-3.5 h-3.5" />
                                   )}
                                 </Link>
-                                <Link
-                                  to={`/signage/${encodeURIComponent(item.lotId)}`}
-                                  title="QR Signage"
-                                  className="w-8 h-8 rounded border border-[#E6E6EF] inline-flex items-center justify-center text-[#4B4D57] hover:text-[#6500B5]"
-                                >
-                                  <QrCode className="w-3.5 h-3.5" />
-                                </Link>
+                                {canonicalUrlValidation.valid ? (
+                                  <Link
+                                    to={`/signage/${encodeURIComponent(item.lotId)}`}
+                                    title="QR Signage"
+                                    className="w-8 h-8 rounded border border-[#E6E6EF] inline-flex items-center justify-center text-[#4B4D57] hover:text-[#6500B5]"
+                                  >
+                                    <QrCode className="w-3.5 h-3.5" />
+                                  </Link>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    disabled
+                                    title="Configure VITE_PUBLIC_SITE_URL or a public HTTPS domain in Settings before printing QR signage."
+                                    className="w-8 h-8 rounded border border-[#E6E6EF] inline-flex items-center justify-center text-[#696B77] opacity-50 cursor-not-allowed"
+                                  >
+                                    <QrCode className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -1146,13 +1205,25 @@ export function AdminDashboardPage() {
                         <span>Copy URL</span>
                       </button>
 
-                      <Link
-                        to={`/signage/${encodeURIComponent(item.lotId)}`}
-                        className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-[#6500B5] bg-[#F3EEFA] border border-[#DCD0F0] rounded-lg"
-                      >
-                        <Printer className="w-3.5 h-3.5" />
-                        <span>QR Sign</span>
-                      </Link>
+                      {canonicalUrlValidation.valid ? (
+                        <Link
+                          to={`/signage/${encodeURIComponent(item.lotId)}`}
+                          className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-[#6500B5] bg-[#F3EEFA] border border-[#DCD0F0] rounded-lg"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>QR Sign</span>
+                        </Link>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled
+                          title="Configure VITE_PUBLIC_SITE_URL or a public HTTPS domain in Settings before printing QR signage."
+                          className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-[#696B77] bg-[#F8F8FC] border border-[#E6E6EF] rounded-lg opacity-65 cursor-not-allowed"
+                        >
+                          <Printer className="w-3.5 h-3.5" />
+                          <span>Signage Disabled</span>
+                        </button>
+                      )}
 
                       <button
                         type="button"
@@ -1434,9 +1505,11 @@ export function AdminDashboardPage() {
                   <div className="p-4 rounded-xl border border-amber-300 bg-amber-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-amber-950">
                     <div>
                       <p className="font-semibold">
-                        QR Studio Locked Until Canonical Domain Is Set
+                        QR Downloads &amp; Printable Signage Disabled Until Public Website URL Is Configured
                       </p>
-                      <p className="mt-0.5">{canonicalUrlValidation.reason}</p>
+                      <p className="mt-0.5">
+                        {canonicalUrlValidation.reason} Distributable QR codes never encode localhost, Google AI Studio preview URLs, or temporary development addresses.
+                      </p>
                     </div>
                     <button
                       type="button"
@@ -1452,10 +1525,8 @@ export function AdminDashboardPage() {
                   {properties
                     .filter((p) => p.visibility !== 'Archived')
                     .map((item) => {
-                      const url = getPropertyPermalink(
-                        item.lotId,
-                        siteSettings.canonicalSiteUrl
-                      );
+                      const url =
+                        buildDistributableQrUrl(effectiveCanonicalSiteUrl, item.lotId) || '';
                       return (
                         <div
                           key={item.id}
@@ -1488,13 +1559,25 @@ export function AdminDashboardPage() {
                             >
                               Open Listing
                             </Link>
-                            <Link
-                              to={`/signage/${encodeURIComponent(item.lotId)}`}
-                              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098]"
-                            >
-                              <Printer className="w-3.5 h-3.5" />
-                              <span>Print Sign</span>
-                            </Link>
+                            {canonicalUrlValidation.valid ? (
+                              <Link
+                                to={`/signage/${encodeURIComponent(item.lotId)}`}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098]"
+                              >
+                                <Printer className="w-3.5 h-3.5" />
+                                <span>Print Sign</span>
+                              </Link>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled
+                                title="Configure VITE_PUBLIC_SITE_URL or a public HTTPS domain in Settings before printing QR signage."
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#696B77] bg-[#F8F8FC] border border-[#E6E6EF] rounded-md opacity-70 cursor-not-allowed"
+                              >
+                                <Printer className="w-3.5 h-3.5" />
+                                <span>Print Disabled</span>
+                              </button>
+                            )}
                           </div>
                         </div>
                       );
