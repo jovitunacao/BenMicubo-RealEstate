@@ -16,8 +16,15 @@ type ClassificationFilter = 'All' | PropertyClassification;
 type SortOption = 'lot' | 'price-asc' | 'price-desc' | 'area-desc';
 
 export function HomePage() {
-  const {activeProperties, isLoading, isDemoMode, isUsingDemoFallback, supabaseError} =
-    usePropertyStore();
+  const {
+    activeProperties,
+    siteSettings,
+    canonicalUrlValidation,
+    isLoading,
+    isDemoMode,
+    isUsingDemoFallback,
+    supabaseError,
+  } = usePropertyStore();
 
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('All');
@@ -308,6 +315,7 @@ export function HomePage() {
                   <option value="Beachfront">Beachfront</option>
                   <option value="Commercial">Commercial</option>
                   <option value="Agricultural">Agricultural</option>
+                  <option value="Other">Other</option>
                 </select>
               </div>
 
@@ -414,10 +422,15 @@ export function HomePage() {
                   <span>{featuredProperty.lotId} Live Signage Preview</span>
                 </div>
                 <QRCodeCanvas
-                  url={getPropertyPermalink(featuredProperty.lotId)}
+                  url={getPropertyPermalink(
+                    featuredProperty.lotId,
+                    siteSettings.canonicalSiteUrl
+                  )}
                   lotId={featuredProperty.lotId}
                   size={176}
                   showDownloads={false}
+                  canonicalValid={canonicalUrlValidation.valid}
+                  blockedReason={canonicalUrlValidation.reason}
                 />
                 <div className="mt-4">
                   <p className="font-display text-base font-semibold text-[#202124]">

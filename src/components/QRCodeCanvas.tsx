@@ -1,12 +1,15 @@
 import {useEffect, useState} from 'react';
+import {Link} from 'react-router-dom';
 import QRCode from 'qrcode';
-import {Download} from 'lucide-react';
+import {AlertTriangle, Download, Settings} from 'lucide-react';
 
 interface QRCodeCanvasProps {
   url: string;
   lotId: string;
   size?: number;
   showDownloads?: boolean;
+  canonicalValid?: boolean;
+  blockedReason?: string;
 }
 
 export function QRCodeCanvas({
@@ -14,12 +17,21 @@ export function QRCodeCanvas({
   lotId,
   size = 200,
   showDownloads = true,
+  canonicalValid = true,
+  blockedReason,
 }: QRCodeCanvasProps) {
   const [dataUrl, setDataUrl] = useState<string>('');
   const [svgMarkup, setSvgMarkup] = useState<string>('');
   const [error, setError] = useState<string>('');
 
   useEffect(() => {
+    if (!canonicalValid) {
+      setDataUrl('');
+      setSvgMarkup('');
+      setError('');
+      return;
+    }
+
     let active = true;
 
     async function generate() {
@@ -60,7 +72,33 @@ export function QRCodeCanvas({
     return () => {
       active = false;
     };
-  }, [url, size]);
+  }, [url, size, canonicalValid]);
+
+  if (!canonicalValid) {
+    return (
+      <div className="w-full p-4 rounded-xl border border-amber-200 bg-amber-50 text-left space-y-2.5">
+        <div className="flex items-start gap-2.5">
+          <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+          <div>
+            <p className="text-xs font-semibold text-amber-950">
+              QR generation paused until canonical domain is configured
+            </p>
+            <p className="mt-1 text-xs text-amber-900 leading-relaxed">
+              {blockedReason ||
+                'Permanent QR codes require an HTTPS production domain (never localhost or preview URLs).'}
+            </p>
+          </div>
+        </div>
+        <Link
+          to="/admin?tab=settings"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098] transition-colors"
+        >
+          <Settings className="w-3.5 h-3.5" />
+          <span>Configure Domain in Admin</span>
+        </Link>
+      </div>
+    );
+  }
 
   const handleDownloadPng = () => {
     if (!dataUrl) return;

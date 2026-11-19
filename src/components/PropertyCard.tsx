@@ -64,6 +64,9 @@ export function PropertyCard({property}: PropertyCardProps) {
             </p>
             <p className="mt-1 text-xs text-[#696B77] font-mono tabular-nums">
               {formatPhp(pricePerSqm)} / sqm
+              {property.isNegotiable && (
+                <span className="font-sans text-[#6500B5] font-medium"> · Negotiable</span>
+              )}
             </p>
           </div>
 
