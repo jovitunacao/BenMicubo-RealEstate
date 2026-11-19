@@ -169,9 +169,90 @@ create table if not exists public.property_documents (
   created_at timestamptz not null default now(),
   constraint property_documents_bucket_visibility_check check (
     (visibility = 'Private' and storage_bucket = 'property-media-private')
-    or (visibility = 'Public' and storage_bucket = 'property-media-public')
+    or (visibility = 'Public' and storage_bucket in ('property-media-private', 'property-media-public'))
   )
 );
+
+-- Enforce that public Storage bucket rows only belong to Published, non-archived properties
+create or replace function public.enforce_media_public_scope()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+declare
+  prop_published boolean;
+begin
+  select (p.visibility = 'Published' and p.is_archived = false)
+  into prop_published
+  from public.properties p
+  where p.id = new.property_id;
+
+  if tg_table_name = 'property_images' then
+    if (new.storage_bucket = 'property-media-public' or new.is_approved_public = true)
+       and coalesce(prop_published, false) is false then
+      raise exception 'SECURITY VIOLATION: Unapproved or unpublished property images cannot target property-media-public';
+    end if;
+  elsif tg_table_name = 'property_documents' then
+    if new.visibility = 'Private' and new.storage_bucket <> 'property-media-private' then
+      raise exception 'SECURITY VIOLATION: Private documents must always target property-media-private';
+    end if;
+    if new.storage_bucket = 'property-media-public' and coalesce(prop_published, false) is false then
+      raise exception 'SECURITY VIOLATION: Unpublished property documents cannot target property-media-public';
+    end if;
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.enforce_media_public_scope() from public;
+revoke all on function public.enforce_media_public_scope() from anon, authenticated;
+
+drop trigger if exists trg_enforce_image_public_scope on public.property_images;
+create trigger trg_enforce_image_public_scope
+  before insert or update on public.property_images
+  for each row
+  execute function public.enforce_media_public_scope();
+
+drop trigger if exists trg_enforce_document_public_scope on public.property_documents;
+create trigger trg_enforce_document_public_scope
+  before insert or update on public.property_documents
+  for each row
+  execute function public.enforce_media_public_scope();
+
+-- Automatically demote public media metadata when a property is unpublished or archived
+create or replace function public.demote_media_on_property_unpublish()
+returns trigger
+language plpgsql
+security definer
+set search_path = pg_catalog, public
+as $$
+begin
+  if (new.visibility <> 'Published' or new.is_archived = true)
+     and (old.visibility = 'Published' and old.is_archived = false) then
+    update public.property_images
+    set is_approved_public = false,
+        storage_bucket = 'property-media-private'
+    where property_id = new.id
+      and (is_approved_public = true or storage_bucket = 'property-media-public');
+
+    update public.property_documents
+    set storage_bucket = 'property-media-private'
+    where property_id = new.id
+      and storage_bucket = 'property-media-public';
+  end if;
+  return new;
+end;
+$$;
+
+revoke all on function public.demote_media_on_property_unpublish() from public;
+revoke all on function public.demote_media_on_property_unpublish() from anon, authenticated;
+
+drop trigger if exists trg_demote_media_on_property_unpublish on public.properties;
+create trigger trg_demote_media_on_property_unpublish
+  after update of visibility, is_archived on public.properties
+  for each row
+  execute function public.demote_media_on_property_unpublish();
 
 -- ============================================================================
 -- 4. BUYER INQUIRIES (Validation + Privileged Field Protection)
@@ -270,8 +351,8 @@ grant insert (
   buyer_phone,
   preferred_date,
   message
-) on public.inquiries to anon;
-grant select, insert, update, delete on public.inquiries to authenticated;
+) on public.inquiries to anon, authenticated;
+grant select, update, delete on public.inquiries to authenticated;
 
 drop policy if exists "Admin read own membership" on public.admin_users;
 create policy "Admin read own membership"
@@ -381,11 +462,30 @@ create policy "Public insert inquiries"
   );
 
 drop policy if exists "Admin manage inquiries" on public.inquiries;
-create policy "Admin manage inquiries"
-  on public.inquiries for all
+drop policy if exists "Admin select inquiries" on public.inquiries;
+create policy "Admin select inquiries"
+  on public.inquiries for select
+  to authenticated
+  using (public.is_authorized_admin());
+
+drop policy if exists "Admin insert inquiries" on public.inquiries;
+create policy "Admin insert inquiries"
+  on public.inquiries for insert
+  to authenticated
+  with check (public.is_authorized_admin());
+
+drop policy if exists "Admin update inquiries" on public.inquiries;
+create policy "Admin update inquiries"
+  on public.inquiries for update
   to authenticated
   using (public.is_authorized_admin())
   with check (public.is_authorized_admin());
+
+drop policy if exists "Admin delete inquiries" on public.inquiries;
+create policy "Admin delete inquiries"
+  on public.inquiries for delete
+  to authenticated
+  using (public.is_authorized_admin());
 
 -- ============================================================================
 -- 7. SUPABASE STORAGE BUCKETS & HARDENED OBJECT POLICIES
@@ -427,6 +527,28 @@ create policy "Public read approved media bucket"
   using (
     bucket_id = 'property-media-public'
     and (storage.foldername(name))[2] in ('images', 'documents')
+    and (
+      exists (
+        select 1
+        from public.property_images pi
+        join public.properties p on p.id = pi.property_id
+        where pi.storage_bucket = 'property-media-public'
+          and pi.storage_path = name
+          and pi.is_approved_public = true
+          and p.visibility = 'Published'
+          and p.is_archived = false
+      )
+      or exists (
+        select 1
+        from public.property_documents pd
+        join public.properties p on p.id = pd.property_id
+        where pd.storage_bucket = 'property-media-public'
+          and pd.storage_path = name
+          and pd.visibility = 'Public'
+          and p.visibility = 'Published'
+          and p.is_archived = false
+      )
+    )
   );
 
 drop policy if exists "Admin write public media bucket" on storage.objects;
