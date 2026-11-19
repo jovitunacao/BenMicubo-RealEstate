@@ -266,10 +266,10 @@ export function AdminDashboardPage() {
     try {
       await saveSiteSettings({
         canonicalSiteUrl: check.valid ? check.normalizedUrl : '',
-        defaultAgentName: agentNameInput.trim() || siteSettings.defaultAgentName,
-        defaultAgentPhone: agentPhoneInput.trim() || siteSettings.defaultAgentPhone,
-        defaultAgentWhatsapp: agentWhatsappInput.trim() || siteSettings.defaultAgentWhatsapp,
-        defaultAgentMessenger: agentMessengerInput.trim() || siteSettings.defaultAgentMessenger,
+        defaultAgentName: agentNameInput.trim(),
+        defaultAgentPhone: agentPhoneInput.trim(),
+        defaultAgentWhatsapp: agentWhatsappInput.trim(),
+        defaultAgentMessenger: agentMessengerInput.trim(),
       });
       showToast('Site configuration and canonical URL settings saved.');
     } catch (err) {
@@ -1631,6 +1631,7 @@ export function AdminDashboardPage() {
                         type="text"
                         value={agentNameInput}
                         onChange={(e) => setAgentNameInput(e.target.value)}
+                        placeholder="e.g., Ben Micubo"
                         className="w-full h-10 px-3 text-sm border border-[#D6D6E4] rounded-lg"
                       />
                     </div>
@@ -1642,6 +1643,7 @@ export function AdminDashboardPage() {
                         type="text"
                         value={agentPhoneInput}
                         onChange={(e) => setAgentPhoneInput(e.target.value)}
+                        placeholder="+63 9XX XXX XXXX"
                         className="w-full h-10 px-3 text-sm border border-[#D6D6E4] rounded-lg"
                       />
                     </div>
@@ -1653,6 +1655,7 @@ export function AdminDashboardPage() {
                         type="text"
                         value={agentWhatsappInput}
                         onChange={(e) => setAgentWhatsappInput(e.target.value)}
+                        placeholder="639XXXXXXXXX"
                         className="w-full h-10 px-3 font-mono text-sm border border-[#D6D6E4] rounded-lg"
                       />
                     </div>
@@ -1664,6 +1667,7 @@ export function AdminDashboardPage() {
                         type="text"
                         value={agentMessengerInput}
                         onChange={(e) => setAgentMessengerInput(e.target.value)}
+                        placeholder="facebook.page.handle"
                         className="w-full h-10 px-3 text-sm border border-[#D6D6E4] rounded-lg"
                       />
                     </div>
@@ -1686,7 +1690,7 @@ export function AdminDashboardPage() {
                   </h3>
                   <ul className="list-disc pl-5 space-y-1">
                     <li>
-                      Database migration: <code className="font-mono">supabase/migrations/20261118_stage2_property_management.sql</code>
+                      Fresh-install consolidated migration: <code className="font-mono">supabase/migrations/20261119_fresh_install.sql</code>
                     </li>
                     <li>
                       Admin access control: <code className="font-mono">public.admin_users</code> verified by <code className="font-mono">public.is_authorized_admin()</code> RLS helper

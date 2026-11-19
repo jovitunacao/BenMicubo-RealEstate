@@ -136,20 +136,22 @@ export function ShareListingButton({
             <span>Share on WhatsApp</span>
           </a>
 
-          <a
-            role="menuitem"
-            href={buildMessengerLink(messengerHandle)}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={() => {
-              void handleCopy();
-              setOpen(false);
-            }}
-            className="w-full flex items-center gap-2.5 px-2.5 py-2 text-xs font-medium text-[#202124] rounded-lg hover:bg-[#F8F8FC] hover:text-[#6500B5]"
-          >
-            <Send className="w-3.5 h-3.5 text-[#10169C]" />
-            <span>Send via Messenger</span>
-          </a>
+          {messengerHandle.trim() && (
+            <a
+              role="menuitem"
+              href={buildMessengerLink(messengerHandle)}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => {
+                void handleCopy();
+                setOpen(false);
+              }}
+              className="w-full flex items-center gap-2.5 px-2.5 py-2 text-xs font-medium text-[#202124] rounded-lg hover:bg-[#F8F8FC] hover:text-[#6500B5]"
+            >
+              <Send className="w-3.5 h-3.5 text-[#10169C]" />
+              <span>Send via Messenger</span>
+            </a>
+          )}
 
           <a
             role="menuitem"

@@ -187,10 +187,11 @@ export function SignagePrintPage() {
               </div>
               <div>
                 <p className="text-xs text-[#696B77]">
-                  BEN MICUBO REAL ESTATE SERVICES · {property.agentName}
+                  BEN MICUBO REAL ESTATE SERVICES
+                  {property.agentName ? ` · ${property.agentName}` : ''}
                 </p>
                 <p className="font-mono text-base font-bold text-[#202124]">
-                  {property.agentPhone}
+                  {property.agentPhone || 'Scan QR for Direct Inquiry'}
                 </p>
               </div>
             </div>

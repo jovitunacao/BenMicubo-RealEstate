@@ -628,39 +628,57 @@ export function PropertyDetailPage() {
                     BEN MICUBO REAL ESTATE SERVICES · Advisor
                   </p>
                   <p className="mt-0.5 font-display text-lg font-semibold text-[#202124]">
-                    {property.agentName}
+                    {property.agentName || 'BEN MICUBO REAL ESTATE SERVICES'}
                   </p>
-                  <p className="text-xs font-mono text-[#4B4D57] mt-0.5">{property.agentPhone}</p>
+                  {property.agentPhone && (
+                    <p className="text-xs font-mono text-[#4B4D57] mt-0.5">{property.agentPhone}</p>
+                  )}
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-1 gap-2.5">
-                <a
-                  href={buildWhatsAppLink(property.agentWhatsapp, property.lotId, property.title)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="h-11 px-4 rounded-lg bg-[#6500B5] text-white text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#540098] transition-colors"
-                >
-                  <MessageCircle className="w-4 h-4" />
-                  <span>Message on WhatsApp</span>
-                </a>
-                <a
-                  href={buildMessengerLink(property.agentMessenger)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="h-11 px-4 rounded-lg bg-white border border-[#D6D6E4] text-[#202124] text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#F8F8FC] transition-colors"
-                >
-                  <Send className="w-4 h-4 text-[#10169C]" />
-                  <span>Chat on Messenger</span>
-                </a>
-                <a
-                  href={`tel:${property.agentPhone.replace(/\s+/g, '')}`}
-                  className="h-11 px-4 rounded-lg bg-white border border-[#D6D6E4] text-[#202124] text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#F8F8FC] transition-colors"
-                >
-                  <Phone className="w-4 h-4 text-[#6500B5]" />
-                  <span>Call {property.agentPhone}</span>
-                </a>
-              </div>
+              {property.agentWhatsapp || property.agentMessenger || property.agentPhone ? (
+                <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-1 gap-2.5">
+                  {property.agentWhatsapp && (
+                    <a
+                      href={buildWhatsAppLink(
+                        property.agentWhatsapp,
+                        property.lotId,
+                        property.title
+                      )}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="h-11 px-4 rounded-lg bg-[#6500B5] text-white text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#540098] transition-colors"
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      <span>Message on WhatsApp</span>
+                    </a>
+                  )}
+                  {property.agentMessenger && (
+                    <a
+                      href={buildMessengerLink(property.agentMessenger)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="h-11 px-4 rounded-lg bg-white border border-[#D6D6E4] text-[#202124] text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#F8F8FC] transition-colors"
+                    >
+                      <Send className="w-4 h-4 text-[#10169C]" />
+                      <span>Chat on Messenger</span>
+                    </a>
+                  )}
+                  {property.agentPhone && (
+                    <a
+                      href={`tel:${property.agentPhone.replace(/\s+/g, '')}`}
+                      className="h-11 px-4 rounded-lg bg-white border border-[#D6D6E4] text-[#202124] text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#F8F8FC] transition-colors"
+                    >
+                      <Phone className="w-4 h-4 text-[#6500B5]" />
+                      <span>Call {property.agentPhone}</span>
+                    </a>
+                  )}
+                </div>
+              ) : (
+                <p className="text-xs text-[#4B4D57] bg-[#F8F8FC] border border-[#E6E6EF] rounded-lg px-3.5 py-2.5">
+                  Direct phone/messaging contact has not been published for this preview listing yet. Please use the inquiry form below to contact BEN MICUBO REAL ESTATE SERVICES.
+                </p>
+              )}
             </div>
 
             {/* Buyer Inquiry Form */}

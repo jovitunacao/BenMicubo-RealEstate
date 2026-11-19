@@ -1661,47 +1661,60 @@ export function AdminPropertyEditor({
 
       {/* Section 7: Assigned Advisor */}
       <section className="p-5 rounded-xl border border-[#E6E6EF] bg-white space-y-3">
-        <h3 className="font-display text-sm font-bold text-[#202124] pb-2 border-b border-[#EFEFF6]">
-          7. Assigned Property Advisor
-        </h3>
+        <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#EFEFF6]">
+          <h3 className="font-display text-sm font-bold text-[#202124]">
+            7. Assigned Property Advisor
+          </h3>
+          <span className="text-[11px] text-[#696B77]">
+            Required before publishing (no placeholder defaults are used)
+          </span>
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
           <div>
-            <label className="block text-xs font-medium text-[#4B4D57] mb-1">Name</label>
+            <label className="block text-xs font-medium text-[#4B4D57] mb-1">
+              Advisor / Agency Name *
+            </label>
             <input
               type="text"
               value={agentName}
               onChange={(e) => setAgentName(e.target.value)}
-              className="w-full h-9 px-3 text-xs border border-[#D6D6E4] rounded-md"
-            />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-[#4B4D57] mb-1">Phone</label>
-            <input
-              type="text"
-              value={agentPhone}
-              onChange={(e) => setAgentPhone(e.target.value)}
+              placeholder="e.g., Ben Micubo"
               className="w-full h-9 px-3 text-xs border border-[#D6D6E4] rounded-md"
             />
           </div>
           <div>
             <label className="block text-xs font-medium text-[#4B4D57] mb-1">
-              WhatsApp Digits
+              Phone Number *
+            </label>
+            <input
+              type="text"
+              value={agentPhone}
+              onChange={(e) => setAgentPhone(e.target.value)}
+              placeholder="+63 9XX XXX XXXX"
+              className="w-full h-9 px-3 text-xs border border-[#D6D6E4] rounded-md"
+            />
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-[#4B4D57] mb-1">
+              WhatsApp Digits *
             </label>
             <input
               type="text"
               value={agentWhatsapp}
               onChange={(e) => setAgentWhatsapp(e.target.value)}
+              placeholder="639XXXXXXXXX"
               className="w-full h-9 px-3 font-mono text-xs border border-[#D6D6E4] rounded-md"
             />
           </div>
           <div>
             <label className="block text-xs font-medium text-[#4B4D57] mb-1">
-              Messenger Handle
+              Messenger Handle (or WhatsApp)
             </label>
             <input
               type="text"
               value={agentMessenger}
               onChange={(e) => setAgentMessenger(e.target.value)}
+              placeholder="facebook.page.handle"
               className="w-full h-9 px-3 text-xs border border-[#D6D6E4] rounded-md"
             />
           </div>

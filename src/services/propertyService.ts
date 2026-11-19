@@ -128,10 +128,10 @@ export function normalizeProperty(raw: Partial<Property> & {id: string; lotId: s
     latitude: Number(raw.latitude) || 14.5995,
     longitude: Number(raw.longitude) || 120.9842,
     googleMapsUrl: raw.googleMapsUrl || '',
-    agentName: raw.agentName || 'Rafael Mendoza',
-    agentPhone: raw.agentPhone || '+63 917 555 0142',
-    agentWhatsapp: raw.agentWhatsapp || '639175550142',
-    agentMessenger: raw.agentMessenger || 'benmicubo.realestate',
+    agentName: (raw.agentName || '').trim(),
+    agentPhone: (raw.agentPhone || '').trim(),
+    agentWhatsapp: (raw.agentWhatsapp || '').trim(),
+    agentMessenger: (raw.agentMessenger || '').trim(),
     publishedAt: raw.publishedAt,
     updatedAt: raw.updatedAt || new Date().toISOString(),
   };
@@ -158,6 +158,32 @@ export function validatePropertyForPublish(
   }
   if ((!input.images || input.images.length === 0) && (!input.photos || input.photos.length === 0)) {
     errors.push('At least one property photo is required before publishing.');
+  }
+  const trimmedName = (input.agentName || '').trim();
+  const phoneDigits = (input.agentPhone || '').replace(/[^0-9]/g, '');
+  const whatsappDigits = (input.agentWhatsapp || '').replace(/[^0-9]/g, '');
+  const trimmedMessenger = (input.agentMessenger || '').trim();
+  const placeholderPattern =
+    /(\b555[\s-]?01\d{2}\b|0000000|^(tbd|placeholder|example|n\/a)$|^rafael mendoza$|^benmicubo\.realestate$)/i;
+
+  if (trimmedName.length < 2 || placeholderPattern.test(trimmedName)) {
+    errors.push('Assigned advisor or agency contact name is required before publishing.');
+  }
+  if (
+    phoneDigits.length < 7 ||
+    placeholderPattern.test((input.agentPhone || '').trim()) ||
+    placeholderPattern.test(phoneDigits)
+  ) {
+    errors.push('A valid assigned phone number (at least 7 digits) is required before publishing.');
+  }
+  if (
+    (whatsappDigits.length < 7 && trimmedMessenger.length < 2) ||
+    placeholderPattern.test((input.agentWhatsapp || '').trim()) ||
+    placeholderPattern.test(trimmedMessenger)
+  ) {
+    errors.push(
+      'Provide at least one valid WhatsApp number or Messenger handle (without placeholder values) before publishing.'
+    );
   }
   for (const vid of input.videos || []) {
     if (!parsePropertyVideoUrl(vid.url)) {
@@ -479,23 +505,36 @@ async function syncPropertyRelationsInSupabase(
 ): Promise<void> {
   if (!supabase) return;
 
-  await supabase.from('property_images').delete().eq('property_id', propertyId);
+  const {error: delImgErr} = await supabase
+    .from('property_images')
+    .delete()
+    .eq('property_id', propertyId);
+  if (delImgErr) throw new Error(delImgErr.message);
+
   if (input.images && input.images.length > 0) {
-    const imgRows = input.images.map((img, idx) => ({
-      property_id: propertyId,
-      storage_bucket: img.storageBucket,
-      storage_path: img.storagePath || '',
-      public_url: img.url,
-      caption: img.caption,
-      is_cover: img.isCover,
-      is_approved_public: img.isApprovedPublic,
-      sort_order: idx,
-    }));
+    const imgRows = input.images.map((img, idx) => {
+      const isPublicBucket = img.storageBucket === 'property-media-public';
+      return {
+        property_id: propertyId,
+        storage_bucket: isPublicBucket ? 'property-media-public' : 'property-media-private',
+        storage_path: img.storagePath || '',
+        public_url: img.url,
+        caption: img.caption,
+        is_cover: img.isCover,
+        is_approved_public: isPublicBucket,
+        sort_order: idx,
+      };
+    });
     const {error} = await supabase.from('property_images').insert(imgRows);
     if (error) throw new Error(error.message);
   }
 
-  await supabase.from('property_videos').delete().eq('property_id', propertyId);
+  const {error: delVidErr} = await supabase
+    .from('property_videos')
+    .delete()
+    .eq('property_id', propertyId);
+  if (delVidErr) throw new Error(delVidErr.message);
+
   if (input.videos && input.videos.length > 0) {
     const vidRows = input.videos.map((v, idx) => ({
       property_id: propertyId,
@@ -509,7 +548,12 @@ async function syncPropertyRelationsInSupabase(
     if (error) throw new Error(error.message);
   }
 
-  await supabase.from('property_documents').delete().eq('property_id', propertyId);
+  const {error: delDocErr} = await supabase
+    .from('property_documents')
+    .delete()
+    .eq('property_id', propertyId);
+  if (delDocErr) throw new Error(delDocErr.message);
+
   if (input.documents && input.documents.length > 0) {
     const docRows = input.documents.map((d) => ({
       property_id: propertyId,
@@ -743,6 +787,19 @@ export const propertyService = {
         updated_at: new Date().toISOString(),
       };
       if (visibility === 'Published') {
+        const {data: currentRow, error: fetchErr} = await supabase
+          .from('properties')
+          .select('*, property_images(*), property_videos(*), property_documents(*)')
+          .eq('id', id)
+          .single();
+        if (fetchErr) throw new Error(fetchErr.message);
+
+        const mapped = mapRowToProperty(currentRow as SupabasePropertyRow);
+        const publishErrors = validatePropertyForPublish(mapped);
+        if (publishErrors.length > 0) {
+          throw new Error(publishErrors[0]);
+        }
+
         updatePayload.published_at = new Date().toISOString();
         const {data: imgRows} = await supabase
           .from('property_images')
@@ -757,7 +814,7 @@ export const propertyService = {
               if (promoted) finalUrl = promoted;
             }
             promotedUrls.push(finalUrl);
-            await supabase
+            const {error: imgUpdErr} = await supabase
               .from('property_images')
               .update({
                 storage_bucket: 'property-media-public',
@@ -765,6 +822,7 @@ export const propertyService = {
                 public_url: finalUrl,
               })
               .eq('id', row.id);
+            if (imgUpdErr) throw new Error(imgUpdErr.message);
           }
           if (promotedUrls.length > 0) {
             updatePayload.photos = promotedUrls;
@@ -780,6 +838,15 @@ export const propertyService = {
     }
 
     const existing = readDemoProperties();
+    if (visibility === 'Published') {
+      const target = existing.find((item) => item.id === id);
+      if (target) {
+        const publishErrors = validatePropertyForPublish(target);
+        if (publishErrors.length > 0) {
+          throw new Error(publishErrors[0]);
+        }
+      }
+    }
     writeDemoProperties(
       existing.map((item) =>
         item.id === id
@@ -822,6 +889,13 @@ export const propertyService = {
 
   async bulkUpdateVisibility(ids: string[], visibility: PropertyVisibility): Promise<void> {
     if (ids.length === 0) return;
+    if (visibility === 'Published') {
+      for (const id of ids) {
+        await this.setVisibility(id, 'Published');
+      }
+      return;
+    }
+
     const isArchived = visibility === 'Archived';
     if (isSupabaseConfigured && supabase) {
       const {error} = await supabase
@@ -891,7 +965,7 @@ export const propertyService = {
     payload: Omit<BuyerInquiry, 'id' | 'status' | 'createdAt'>
   ): Promise<BuyerInquiry> {
     if (isSupabaseConfigured && supabase) {
-      // Do NOT call .select().single() after public INSERT because anon intentionally has no SELECT RLS on inquiries
+      // Omit status/id/created_at: anon only has column-level INSERT on user-facing fields; DB defaults/trigger set 'New'
       const {error} = await supabase.from('inquiries').insert({
         property_lot_id: payload.propertyLotId,
         property_title: payload.propertyTitle,
@@ -900,7 +974,6 @@ export const propertyService = {
         buyer_phone: payload.buyerPhone,
         preferred_date: payload.preferredDate || null,
         message: payload.message,
-        status: 'New',
       });
       if (error) throw new Error(error.message);
       return {
@@ -955,14 +1028,10 @@ export const propertyService = {
         return {
           canonicalSiteUrl:
             data.canonical_site_url || DEFAULT_SITE_SETTINGS.canonicalSiteUrl,
-          defaultAgentName:
-            data.default_agent_name || DEFAULT_SITE_SETTINGS.defaultAgentName,
-          defaultAgentPhone:
-            data.default_agent_phone || DEFAULT_SITE_SETTINGS.defaultAgentPhone,
-          defaultAgentWhatsapp:
-            data.default_agent_whatsapp || DEFAULT_SITE_SETTINGS.defaultAgentWhatsapp,
-          defaultAgentMessenger:
-            data.default_agent_messenger || DEFAULT_SITE_SETTINGS.defaultAgentMessenger,
+          defaultAgentName: data.default_agent_name || '',
+          defaultAgentPhone: data.default_agent_phone || '',
+          defaultAgentWhatsapp: data.default_agent_whatsapp || '',
+          defaultAgentMessenger: data.default_agent_messenger || '',
         };
       }
     }
