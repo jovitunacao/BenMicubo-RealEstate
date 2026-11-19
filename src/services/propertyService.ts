@@ -19,8 +19,13 @@ import type {
 import {computePricePerSqm} from '../utils/format';
 import {parsePropertyVideoUrl} from '../utils/video';
 import {
+  demoteFileFromPublicBucket,
+  PRIVATE_MEDIA_BUCKET,
+  promoteFileToPublicBucket,
   promoteImageToPublicBucket,
+  PUBLIC_MEDIA_BUCKET,
   refreshPrivateImageSignedUrl,
+  removeStoragePathsFromBucket,
 } from './storageService';
 
 const PROPERTIES_STORAGE_KEY = 'amihan_demo_properties_v2';
@@ -158,6 +163,12 @@ export function validatePropertyForPublish(
   }
   if ((!input.images || input.images.length === 0) && (!input.photos || input.photos.length === 0)) {
     errors.push('At least one property photo is required before publishing.');
+  } else if (
+    input.images &&
+    input.images.length > 0 &&
+    !input.images.some((img) => img.isApprovedPublic)
+  ) {
+    errors.push('At least one property photo must be approved for public display before publishing.');
   }
   const trimmedName = (input.agentName || '').trim();
   const phoneDigits = (input.agentPhone || '').replace(/[^0-9]/g, '');
@@ -505,6 +516,49 @@ async function syncPropertyRelationsInSupabase(
 ): Promise<void> {
   if (!supabase) return;
 
+  // Identify removed/replaced Storage files so orphaned previously-published media are deleted
+  const [{data: prevImgs}, {data: prevDocs}] = await Promise.all([
+    supabase
+      .from('property_images')
+      .select('storage_bucket, storage_path')
+      .eq('property_id', propertyId),
+    supabase
+      .from('property_documents')
+      .select('storage_bucket, storage_path')
+      .eq('property_id', propertyId),
+  ]);
+
+  const activePublicPaths = new Set<string>();
+  const activePrivatePaths = new Set<string>();
+  for (const img of input.images || []) {
+    if (!img.storagePath) continue;
+    if (img.storageBucket === PUBLIC_MEDIA_BUCKET) activePublicPaths.add(img.storagePath);
+    else activePrivatePaths.add(img.storagePath);
+  }
+  for (const doc of input.documents || []) {
+    if (!doc.storagePath) continue;
+    if (doc.storageBucket === PUBLIC_MEDIA_BUCKET) activePublicPaths.add(doc.storagePath);
+    else activePrivatePaths.add(doc.storagePath);
+  }
+
+  const orphanPublicPaths: string[] = [];
+  const orphanPrivatePaths: string[] = [];
+  for (const row of [...(prevImgs || []), ...(prevDocs || [])]) {
+    const path = row.storage_path as string;
+    if (!path) continue;
+    if (row.storage_bucket === PUBLIC_MEDIA_BUCKET && !activePublicPaths.has(path)) {
+      orphanPublicPaths.push(path);
+    } else if (
+      row.storage_bucket === PRIVATE_MEDIA_BUCKET &&
+      !activePrivatePaths.has(path) &&
+      !activePublicPaths.has(path)
+    ) {
+      orphanPrivatePaths.push(path);
+    }
+  }
+  await removeStoragePathsFromBucket(PUBLIC_MEDIA_BUCKET, orphanPublicPaths);
+  await removeStoragePathsFromBucket(PRIVATE_MEDIA_BUCKET, orphanPrivatePaths);
+
   const {error: delImgErr} = await supabase
     .from('property_images')
     .delete()
@@ -513,10 +567,14 @@ async function syncPropertyRelationsInSupabase(
 
   if (input.images && input.images.length > 0) {
     const imgRows = input.images.map((img, idx) => {
-      const isPublicBucket = img.storageBucket === 'property-media-public';
+      const isPublicBucket =
+        input.visibility === 'Published' &&
+        !input.isArchived &&
+        img.isApprovedPublic &&
+        img.storageBucket === PUBLIC_MEDIA_BUCKET;
       return {
         property_id: propertyId,
-        storage_bucket: isPublicBucket ? 'property-media-public' : 'property-media-private',
+        storage_bucket: isPublicBucket ? PUBLIC_MEDIA_BUCKET : PRIVATE_MEDIA_BUCKET,
         storage_path: img.storagePath || '',
         public_url: img.url,
         caption: img.caption,
@@ -555,44 +613,143 @@ async function syncPropertyRelationsInSupabase(
   if (delDocErr) throw new Error(delDocErr.message);
 
   if (input.documents && input.documents.length > 0) {
-    const docRows = input.documents.map((d) => ({
-      property_id: propertyId,
-      title: d.title,
-      category: d.category,
-      visibility: d.visibility,
-      storage_bucket:
-        d.visibility === 'Public' ? 'property-media-public' : 'property-media-private',
-      storage_path: d.storagePath,
-      file_name: d.fileName,
-      mime_type: d.mimeType,
-      file_size_bytes: d.fileSizeBytes,
-    }));
+    const docRows = input.documents.map((d) => {
+      const isPublicDoc =
+        d.visibility === 'Public' &&
+        input.visibility === 'Published' &&
+        !input.isArchived &&
+        d.storageBucket === PUBLIC_MEDIA_BUCKET;
+      return {
+        property_id: propertyId,
+        title: d.title,
+        category: d.category,
+        visibility: d.visibility,
+        storage_bucket: isPublicDoc ? PUBLIC_MEDIA_BUCKET : PRIVATE_MEDIA_BUCKET,
+        storage_path: d.storagePath,
+        file_name: d.fileName,
+        mime_type: d.mimeType,
+        file_size_bytes: d.fileSizeBytes,
+      };
+    });
     const {error} = await supabase.from('property_documents').insert(docRows);
     if (error) throw new Error(error.message);
   }
 }
 
-async function prepareImagesForVisibility(
+export async function prepareImagesForVisibility(
   images: PropertyImageItem[] = [],
   visibility: PropertyVisibility
 ): Promise<PropertyImageItem[]> {
-  if (!isSupabaseConfigured || !supabase || visibility !== 'Published') {
-    return images;
-  }
+  const isPublished = visibility === 'Published';
+
   return Promise.all(
     images.map(async (img) => {
-      if (img.storagePath && img.storageBucket === 'property-media-private') {
+      const shouldBePublic = isPublished && Boolean(img.isApprovedPublic);
+
+      if (!shouldBePublic) {
+        if (
+          isSupabaseConfigured &&
+          supabase &&
+          img.storagePath &&
+          img.storageBucket === PUBLIC_MEDIA_BUCKET
+        ) {
+          const {signedUrl} = await demoteFileFromPublicBucket(img.storagePath, 'image');
+          return {
+            ...img,
+            url: signedUrl || img.url,
+            storageBucket: PRIVATE_MEDIA_BUCKET,
+            isApprovedPublic: false,
+          };
+        }
+        return {
+          ...img,
+          storageBucket: PRIVATE_MEDIA_BUCKET,
+          isApprovedPublic: false,
+        };
+      }
+
+      if (
+        isSupabaseConfigured &&
+        supabase &&
+        img.storagePath &&
+        img.storageBucket === PRIVATE_MEDIA_BUCKET
+      ) {
         const publicUrl = await promoteImageToPublicBucket(img.storagePath);
         if (publicUrl) {
           return {
             ...img,
             url: publicUrl,
-            storageBucket: 'property-media-public' as const,
+            storageBucket: PUBLIC_MEDIA_BUCKET,
             isApprovedPublic: true,
           };
         }
+        return {
+          ...img,
+          storageBucket: PRIVATE_MEDIA_BUCKET,
+          isApprovedPublic: false,
+        };
       }
-      return img;
+
+      return {
+        ...img,
+        storageBucket: img.storagePath ? img.storageBucket : PUBLIC_MEDIA_BUCKET,
+        isApprovedPublic: true,
+      };
+    })
+  );
+}
+
+export async function prepareDocumentsForVisibility(
+  documents: PropertyDocumentItem[] = [],
+  visibility: PropertyVisibility
+): Promise<PropertyDocumentItem[]> {
+  const isPublished = visibility === 'Published';
+
+  return Promise.all(
+    documents.map(async (doc) => {
+      const shouldBeInPublicBucket = isPublished && doc.visibility === 'Public';
+
+      if (!shouldBeInPublicBucket) {
+        if (
+          isSupabaseConfigured &&
+          supabase &&
+          doc.storagePath &&
+          doc.storageBucket === PUBLIC_MEDIA_BUCKET
+        ) {
+          await demoteFileFromPublicBucket(doc.storagePath, 'document');
+        }
+        return {
+          ...doc,
+          storageBucket: PRIVATE_MEDIA_BUCKET,
+          publicUrl: doc.visibility === 'Public' ? doc.publicUrl : undefined,
+        };
+      }
+
+      if (
+        isSupabaseConfigured &&
+        supabase &&
+        doc.storagePath &&
+        doc.storageBucket === PRIVATE_MEDIA_BUCKET
+      ) {
+        const publicUrl = await promoteFileToPublicBucket(doc.storagePath, doc.mimeType);
+        if (publicUrl) {
+          return {
+            ...doc,
+            storageBucket: PUBLIC_MEDIA_BUCKET,
+            publicUrl,
+          };
+        }
+        return {
+          ...doc,
+          storageBucket: PRIVATE_MEDIA_BUCKET,
+          publicUrl: undefined,
+        };
+      }
+
+      return {
+        ...doc,
+        storageBucket: doc.storagePath ? doc.storageBucket : PUBLIC_MEDIA_BUCKET,
+      };
     })
   );
 }
@@ -665,15 +822,16 @@ export const propertyService = {
   async createProperty(input: PropertyInput): Promise<Property> {
     const normalizedLotId = input.lotId.trim().toUpperCase();
     const validatedVideos = validateAndNormalizeVideos(input.videos || []);
-    const preparedImages = await prepareImagesForVisibility(
-      input.images || [],
-      input.visibility
-    );
+    const [preparedImages, preparedDocuments] = await Promise.all([
+      prepareImagesForVisibility(input.images || [], input.visibility),
+      prepareDocumentsForVisibility(input.documents || [], input.visibility),
+    ]);
     const preparedInput: PropertyInput = {
       ...input,
       lotId: normalizedLotId,
       isArchived: input.visibility === 'Archived' || input.isArchived,
       images: preparedImages,
+      documents: preparedDocuments,
       videos: validatedVideos,
       youtubeUrl: validatedVideos[0]?.url || '',
       photos:
@@ -724,15 +882,16 @@ export const propertyService = {
       if (fetchErr) throw new Error(fetchErr.message);
 
       const lockedLotId = existingRow.lot_id;
-      const preparedImages = await prepareImagesForVisibility(
-        input.images || [],
-        input.visibility
-      );
+      const [preparedImages, preparedDocuments] = await Promise.all([
+        prepareImagesForVisibility(input.images || [], input.visibility),
+        prepareDocumentsForVisibility(input.documents || [], input.visibility),
+      ]);
       const preparedInput: PropertyInput = {
         ...input,
         lotId: lockedLotId,
         isArchived: input.visibility === 'Archived' || input.isArchived,
         images: preparedImages,
+        documents: preparedDocuments,
         photos:
           preparedImages.length > 0
             ? sortImagesCoverFirst(preparedImages).map((img) => img.url)
@@ -764,11 +923,21 @@ export const propertyService = {
 
     // Preserve immutable Lot ID on edit
     const lockedLotId = current.lotId;
+    const [preparedImages, preparedDocuments] = await Promise.all([
+      prepareImagesForVisibility(input.images || [], input.visibility),
+      prepareDocumentsForVisibility(input.documents || [], input.visibility),
+    ]);
     const updated = normalizeProperty({
       ...input,
       lotId: lockedLotId,
       id,
       isArchived: input.visibility === 'Archived' || input.isArchived,
+      images: preparedImages,
+      documents: preparedDocuments,
+      photos:
+        preparedImages.length > 0
+          ? sortImagesCoverFirst(preparedImages).map((img) => img.url)
+          : input.photos,
       videos: validatedVideos,
       youtubeUrl: validatedVideos[0]?.url || '',
       updatedAt: new Date().toISOString(),
@@ -781,11 +950,6 @@ export const propertyService = {
   async setVisibility(id: string, visibility: PropertyVisibility): Promise<void> {
     const isArchived = visibility === 'Archived';
     if (isSupabaseConfigured && supabase) {
-      const updatePayload: Record<string, unknown> = {
-        visibility,
-        is_archived: isArchived,
-        updated_at: new Date().toISOString(),
-      };
       if (visibility === 'Published') {
         const {data: currentRow, error: fetchErr} = await supabase
           .from('properties')
@@ -800,24 +964,45 @@ export const propertyService = {
           throw new Error(publishErrors[0]);
         }
 
-        updatePayload.published_at = new Date().toISOString();
-        const {data: imgRows} = await supabase
-          .from('property_images')
-          .select('id, storage_bucket, storage_path, public_url')
-          .eq('property_id', id);
+        // Update property visibility FIRST so DB triggers allow public media promotion
+        const {error: propPubErr} = await supabase
+          .from('properties')
+          .update({
+            visibility: 'Published',
+            is_archived: false,
+            published_at: mapped.publishedAt || new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', id);
+        if (propPubErr) throw new Error(propPubErr.message);
+
+        const [{data: imgRows}, {data: docRows}] = await Promise.all([
+          supabase
+            .from('property_images')
+            .select('id, storage_bucket, storage_path, public_url')
+            .eq('property_id', id),
+          supabase
+            .from('property_documents')
+            .select('id, visibility, storage_bucket, storage_path, mime_type')
+            .eq('property_id', id),
+        ]);
+
         if (imgRows && imgRows.length > 0) {
           const promotedUrls: string[] = [];
           for (const row of imgRows) {
             let finalUrl = row.public_url as string;
-            if (row.storage_bucket === 'property-media-private' && row.storage_path) {
+            if (row.storage_bucket === PRIVATE_MEDIA_BUCKET && row.storage_path) {
               const promoted = await promoteImageToPublicBucket(row.storage_path);
-              if (promoted) finalUrl = promoted;
+              if (!promoted) {
+                throw new Error('Failed to promote private image to public storage before publishing.');
+              }
+              finalUrl = promoted;
             }
             promotedUrls.push(finalUrl);
             const {error: imgUpdErr} = await supabase
               .from('property_images')
               .update({
-                storage_bucket: 'property-media-public',
+                storage_bucket: PUBLIC_MEDIA_BUCKET,
                 is_approved_public: true,
                 public_url: finalUrl,
               })
@@ -825,13 +1010,77 @@ export const propertyService = {
             if (imgUpdErr) throw new Error(imgUpdErr.message);
           }
           if (promotedUrls.length > 0) {
-            updatePayload.photos = promotedUrls;
+            await supabase.from('properties').update({photos: promotedUrls}).eq('id', id);
           }
         }
+
+        if (docRows && docRows.length > 0) {
+          for (const d of docRows) {
+            if (d.visibility === 'Public' && d.storage_bucket === PRIVATE_MEDIA_BUCKET && d.storage_path) {
+              const promotedDocUrl = await promoteFileToPublicBucket(d.storage_path, d.mime_type);
+              if (promotedDocUrl) {
+                const {error: docUpdErr} = await supabase
+                  .from('property_documents')
+                  .update({storage_bucket: PUBLIC_MEDIA_BUCKET})
+                  .eq('id', d.id);
+                if (docUpdErr) throw new Error(docUpdErr.message);
+              }
+            }
+          }
+        }
+        return;
       }
+
+      // Unpublishing / Archiving: physically demote and delete previously-published files from public Storage
+      const [{data: imgRows}, {data: docRows}] = await Promise.all([
+        supabase
+          .from('property_images')
+          .select('id, storage_bucket, storage_path, public_url')
+          .eq('property_id', id),
+        supabase
+          .from('property_documents')
+          .select('id, storage_bucket, storage_path')
+          .eq('property_id', id),
+      ]);
+
+      const demotedPhotoUrls: string[] = [];
+      for (const row of imgRows || []) {
+        let nextUrl = row.public_url as string;
+        if (row.storage_bucket === PUBLIC_MEDIA_BUCKET && row.storage_path) {
+          const {signedUrl} = await demoteFileFromPublicBucket(row.storage_path, 'image');
+          if (signedUrl) nextUrl = signedUrl;
+        }
+        demotedPhotoUrls.push(nextUrl);
+        const {error: imgDemoteErr} = await supabase
+          .from('property_images')
+          .update({
+            storage_bucket: PRIVATE_MEDIA_BUCKET,
+            is_approved_public: false,
+            public_url: nextUrl,
+          })
+          .eq('id', row.id);
+        if (imgDemoteErr) throw new Error(imgDemoteErr.message);
+      }
+
+      for (const doc of docRows || []) {
+        if (doc.storage_bucket === PUBLIC_MEDIA_BUCKET && doc.storage_path) {
+          await demoteFileFromPublicBucket(doc.storage_path, 'document');
+          const {error: docDemoteErr} = await supabase
+            .from('property_documents')
+            .update({storage_bucket: PRIVATE_MEDIA_BUCKET})
+            .eq('id', doc.id);
+          if (docDemoteErr) throw new Error(docDemoteErr.message);
+        }
+      }
+
       const {error} = await supabase
         .from('properties')
-        .update(updatePayload)
+        .update({
+          visibility,
+          is_archived: isArchived,
+          ...(demotedPhotoUrls.length > 0 ? {photos: demotedPhotoUrls} : {}),
+          updated_at: new Date().toISOString(),
+        })
         .eq('id', id);
       if (error) throw new Error(error.message);
       return;
@@ -847,22 +1096,33 @@ export const propertyService = {
         }
       }
     }
-    writeDemoProperties(
-      existing.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              visibility,
-              isArchived,
-              publishedAt:
-                visibility === 'Published'
-                  ? item.publishedAt || new Date().toISOString()
-                  : item.publishedAt,
-              updatedAt: new Date().toISOString(),
-            }
-          : item
-      )
+    const updatedList = await Promise.all(
+      existing.map(async (item) => {
+        if (item.id !== id) return item;
+        const [preparedImages, preparedDocuments] = await Promise.all([
+          prepareImagesForVisibility(
+            visibility === 'Published'
+              ? item.images.map((img) => ({...img, isApprovedPublic: true}))
+              : item.images,
+            visibility
+          ),
+          prepareDocumentsForVisibility(item.documents, visibility),
+        ]);
+        return {
+          ...item,
+          visibility,
+          isArchived,
+          images: preparedImages,
+          documents: preparedDocuments,
+          publishedAt:
+            visibility === 'Published'
+              ? item.publishedAt || new Date().toISOString()
+              : item.publishedAt,
+          updatedAt: new Date().toISOString(),
+        };
+      })
     );
+    writeDemoProperties(updatedList);
   },
 
   async bulkUpdateStatus(ids: string[], status: PropertyStatus): Promise<void> {
@@ -889,45 +1149,36 @@ export const propertyService = {
 
   async bulkUpdateVisibility(ids: string[], visibility: PropertyVisibility): Promise<void> {
     if (ids.length === 0) return;
-    if (visibility === 'Published') {
-      for (const id of ids) {
-        await this.setVisibility(id, 'Published');
-      }
-      return;
+    for (const id of ids) {
+      await this.setVisibility(id, visibility);
     }
-
-    const isArchived = visibility === 'Archived';
-    if (isSupabaseConfigured && supabase) {
-      const {error} = await supabase
-        .from('properties')
-        .update({
-          visibility,
-          is_archived: isArchived,
-          updated_at: new Date().toISOString(),
-        })
-        .in('id', ids);
-      if (error) throw new Error(error.message);
-      return;
-    }
-
-    const idSet = new Set(ids);
-    const existing = readDemoProperties();
-    writeDemoProperties(
-      existing.map((item) =>
-        idSet.has(item.id)
-          ? {
-              ...item,
-              visibility,
-              isArchived,
-              updatedAt: new Date().toISOString(),
-            }
-          : item
-      )
-    );
   },
 
   async deleteProperty(id: string): Promise<void> {
     if (isSupabaseConfigured && supabase) {
+      const [{data: imgRows}, {data: docRows}] = await Promise.all([
+        supabase
+          .from('property_images')
+          .select('storage_bucket, storage_path')
+          .eq('property_id', id),
+        supabase
+          .from('property_documents')
+          .select('storage_bucket, storage_path')
+          .eq('property_id', id),
+      ]);
+
+      const publicPaths: string[] = [];
+      const privatePaths: string[] = [];
+      for (const row of [...(imgRows || []), ...(docRows || [])]) {
+        const path = row.storage_path as string;
+        if (!path) continue;
+        if (row.storage_bucket === PUBLIC_MEDIA_BUCKET) publicPaths.push(path);
+        else privatePaths.push(path);
+      }
+
+      await removeStoragePathsFromBucket(PUBLIC_MEDIA_BUCKET, publicPaths);
+      await removeStoragePathsFromBucket(PRIVATE_MEDIA_BUCKET, privatePaths);
+
       const {error} = await supabase.from('properties').delete().eq('id', id);
       if (error) throw new Error(error.message);
       return;

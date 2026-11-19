@@ -48,7 +48,7 @@ export function PropertyDetailPage() {
     isLoading,
     effectiveCanonicalSiteUrl,
     canonicalUrlValidation,
-    session,
+    isAdminAuthorized,
     isDemoMode,
   } = usePropertyStore();
   const property = getByLotId(lotId);
@@ -75,7 +75,7 @@ export function PropertyDetailPage() {
   }
 
   const isPreviewAllowed =
-    searchParams.get('preview') === '1' && (Boolean(session) || isDemoMode);
+    searchParams.get('preview') === '1' && (isAdminAuthorized || isDemoMode);
   const publiclyVisible = property ? isPropertyPubliclyVisible(property) : false;
 
   if (!property || (!publiclyVisible && !isPreviewAllowed)) {
@@ -107,7 +107,9 @@ export function PropertyDetailPage() {
 
   const galleryImages =
     property.images && property.images.length > 0
-      ? property.images
+      ? isPreviewAllowed
+        ? property.images
+        : property.images.filter((img) => img.isApprovedPublic)
       : property.photos.map((url, idx) => ({
           id: `fallback-${idx}`,
           url,

@@ -23,6 +23,22 @@ const ALLOWED_PRIVATE_DOC_MIMES = new Set([
   'image/webp',
 ]);
 
+export function resolveImageUploadBucket(
+  isApprovedPublic: boolean,
+  isPropertyPublished: boolean
+): 'property-media-private' | 'property-media-public' {
+  return isApprovedPublic && isPropertyPublished ? PUBLIC_MEDIA_BUCKET : PRIVATE_MEDIA_BUCKET;
+}
+
+export function resolveDocumentUploadBucket(
+  visibility: 'Private' | 'Public',
+  isPropertyPublished: boolean
+): 'property-media-private' | 'property-media-public' {
+  return visibility === 'Public' && isPropertyPublished
+    ? PUBLIC_MEDIA_BUCKET
+    : PRIVATE_MEDIA_BUCKET;
+}
+
 export function validateDocumentFile(
   file: Pick<File, 'name' | 'size' | 'type'>,
   visibility: 'Private' | 'Public'
@@ -51,7 +67,8 @@ export async function uploadOptimizedPropertyImage(
   fileName: string,
   mimeType: string,
   isApprovedPublic: boolean,
-  fallbackDataUrl: string
+  fallbackDataUrl: string,
+  isPropertyPublished = false
 ): Promise<{
   url: string;
   storageBucket: 'property-media-private' | 'property-media-public';
@@ -64,7 +81,8 @@ export async function uploadOptimizedPropertyImage(
     throw new Error('Optimized image exceeds the 10 MB upload limit.');
   }
 
-  const bucket = isApprovedPublic ? PUBLIC_MEDIA_BUCKET : PRIVATE_MEDIA_BUCKET;
+  // Unapproved images or uploads on unpublished/staged listings NEVER go to public Storage
+  const bucket = resolveImageUploadBucket(isApprovedPublic, isPropertyPublished);
   const storagePath = `${lotId.toUpperCase()}/images/${Date.now()}-${fileName}`;
 
   if (isSupabaseConfigured && supabase) {
@@ -92,8 +110,9 @@ export async function uploadOptimizedPropertyImage(
   };
 }
 
-export async function promoteImageToPublicBucket(
-  storagePath: string
+export async function promoteFileToPublicBucket(
+  storagePath: string,
+  fallbackContentType = 'application/octet-stream'
 ): Promise<string | null> {
   if (!isSupabaseConfigured || !supabase || !storagePath) return null;
 
@@ -105,13 +124,70 @@ export async function promoteImageToPublicBucket(
   const {error: uploadErr} = await supabase.storage
     .from(PUBLIC_MEDIA_BUCKET)
     .upload(storagePath, fileBlob, {
-      contentType: fileBlob.type || 'image/webp',
+      contentType: fileBlob.type || fallbackContentType,
       upsert: true,
     });
   if (uploadErr) return null;
 
   const {data} = supabase.storage.from(PUBLIC_MEDIA_BUCKET).getPublicUrl(storagePath);
   return data.publicUrl;
+}
+
+export async function promoteImageToPublicBucket(
+  storagePath: string
+): Promise<string | null> {
+  return promoteFileToPublicBucket(storagePath, 'image/webp');
+}
+
+export async function demoteFileFromPublicBucket(
+  storagePath: string,
+  kind: 'image' | 'document'
+): Promise<{signedUrl: string | null}> {
+  if (!isSupabaseConfigured || !supabase || !storagePath) {
+    return {signedUrl: null};
+  }
+
+  const {data: publicBlob, error: dlErr} = await supabase.storage
+    .from(PUBLIC_MEDIA_BUCKET)
+    .download(storagePath);
+  if (!dlErr && publicBlob) {
+    const {error: backupErr} = await supabase.storage
+      .from(PRIVATE_MEDIA_BUCKET)
+      .upload(storagePath, publicBlob, {
+        contentType: publicBlob.type || 'application/octet-stream',
+        upsert: true,
+      });
+    if (backupErr) {
+      throw new Error(`Failed to archive confidential file to private storage: ${backupErr.message}`);
+    }
+  }
+
+  const {error: removeErr} = await supabase.storage
+    .from(PUBLIC_MEDIA_BUCKET)
+    .remove([storagePath]);
+  if (removeErr) {
+    throw new Error(`Failed to remove confidential file from public storage: ${removeErr.message}`);
+  }
+
+  if (kind === 'image') {
+    const {data: signed} = await supabase.storage
+      .from(PRIVATE_MEDIA_BUCKET)
+      .createSignedUrl(storagePath, 3600);
+    return {signedUrl: signed?.signedUrl || null};
+  }
+  return {signedUrl: null};
+}
+
+export async function removeStoragePathsFromBucket(
+  bucket: 'property-media-private' | 'property-media-public',
+  paths: string[]
+): Promise<void> {
+  const cleanPaths = paths.filter((p) => Boolean(p && !p.includes('..')));
+  if (!isSupabaseConfigured || !supabase || cleanPaths.length === 0) return;
+  const {error} = await supabase.storage.from(bucket).remove(cleanPaths);
+  if (error) {
+    throw new Error(`Failed to remove storage files from ${bucket}: ${error.message}`);
+  }
 }
 
 export async function refreshPrivateImageSignedUrl(
@@ -128,7 +204,8 @@ export async function refreshPrivateImageSignedUrl(
 export async function uploadPropertyDocumentFile(
   lotId: string,
   file: File,
-  visibility: 'Private' | 'Public'
+  visibility: 'Private' | 'Public',
+  isPropertyPublished = false
 ): Promise<{
   storageBucket: 'property-media-private' | 'property-media-public';
   storagePath: string;
@@ -137,7 +214,8 @@ export async function uploadPropertyDocumentFile(
 }> {
   validateDocumentFile(file, visibility);
 
-  const bucket = visibility === 'Public' ? PUBLIC_MEDIA_BUCKET : PRIVATE_MEDIA_BUCKET;
+  // Private documents and unpublished property documents NEVER upload to public Storage
+  const bucket = resolveDocumentUploadBucket(visibility, isPropertyPublished);
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-');
   const storagePath = `${lotId.toUpperCase()}/documents/${Date.now()}-${safeName}`;
 
@@ -147,7 +225,7 @@ export async function uploadPropertyDocumentFile(
       .upload(storagePath, file, {contentType: file.type || 'application/octet-stream'});
     if (error) throw new Error(`Document upload failed: ${error.message}`);
 
-    if (visibility === 'Public') {
+    if (bucket === PUBLIC_MEDIA_BUCKET) {
       const {data} = supabase.storage.from(bucket).getPublicUrl(storagePath);
       return {storageBucket: bucket, storagePath, publicUrl: data.publicUrl};
     }
@@ -167,7 +245,7 @@ export async function uploadPropertyDocumentFile(
   return {
     storageBucket: bucket,
     storagePath,
-    publicUrl: visibility === 'Public' ? dataUrl : undefined,
+    publicUrl: bucket === PUBLIC_MEDIA_BUCKET ? dataUrl : undefined,
     dataUrl,
   };
 }
@@ -181,7 +259,10 @@ export async function getAuthorizedDocumentDownloadUrl(
   }
 
   if (isSupabaseConfigured && supabase && doc.storagePath) {
-    if (doc.visibility === 'Private') {
+    if (doc.visibility === 'Private' || doc.storageBucket === PRIVATE_MEDIA_BUCKET) {
+      if (!isAdminAuthorized) {
+        throw new Error('Unauthorized: Private storage documents require administrator authentication.');
+      }
       const {data, error} = await supabase.storage
         .from(PRIVATE_MEDIA_BUCKET)
         .createSignedUrl(doc.storagePath, 60);
@@ -205,4 +286,3 @@ export async function getAuthorizedDocumentDownloadUrl(
 
   throw new Error('Document file is stored in private preview placeholder mode.');
 }
-

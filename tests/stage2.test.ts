@@ -13,11 +13,13 @@ import {computeTotalPrice, generateNextLotId, getPropertyPermalink} from '../src
 import {
   filterPublicDocuments,
   isPropertyPubliclyVisible,
+  prepareDocumentsForVisibility,
+  prepareImagesForVisibility,
   propertyService,
   validatePropertyForPublish,
 } from '../src/services/propertyService';
 import {DEFAULT_SITE_SETTINGS, DEMO_PROPERTIES} from '../src/data/demoProperties';
-import type {PropertyDocumentItem, PropertyInput} from '../src/types/property';
+import type {PropertyDocumentItem, PropertyImageItem, PropertyInput} from '../src/types/property';
 import {
   extractGoogleDriveFileId,
   extractYouTubeVideoId,
@@ -28,6 +30,10 @@ import {
   getAuthorizedDocumentDownloadUrl,
   MAX_PRIVATE_FILE_BYTES,
   MAX_PUBLIC_FILE_BYTES,
+  PRIVATE_MEDIA_BUCKET,
+  PUBLIC_MEDIA_BUCKET,
+  resolveDocumentUploadBucket,
+  resolveImageUploadBucket,
   validateDocumentFile,
 } from '../src/services/storageService';
 
@@ -480,17 +486,30 @@ test('Consolidated fresh-install SQL migration and frontend queries pass securit
     /revoke all on function public\.enforce_public_inquiry_defaults\(\) from anon, authenticated;/i
   );
 
-  // 4. Inquiries column-level anon INSERT excludes id, status, created_at & RLS checks Published non-archived lots
-  const anonGrantMatch = freshSql.match(/grant insert\s*\(([\s\S]*?)\)\s*on public\.inquiries to anon;/i);
-  assert.ok(anonGrantMatch, 'Expected column-level INSERT grant on public.inquiries for anon');
-  const grantedCols = anonGrantMatch[1];
+  // 4. Inquiries column-level INSERT for BOTH anon & authenticated excludes id, status, created_at
+  const grantMatch = freshSql.match(
+    /grant insert\s*\(([\s\S]*?)\)\s*on public\.inquiries to anon, authenticated;/i
+  );
+  assert.ok(
+    grantMatch,
+    'Expected column-level INSERT grant on public.inquiries for both anon and authenticated'
+  );
+  const grantedCols = grantMatch[1];
   assert.equal(/\bid\b/.test(grantedCols), false);
   assert.equal(/\bstatus\b/.test(grantedCols), false);
   assert.equal(/\bcreated_at\b/.test(grantedCols), false);
+  assert.match(freshSql, /grant select, update, delete on public\.inquiries to authenticated;/i);
+  assert.equal(
+    /grant select, insert, update, delete on public\.inquiries to authenticated;/i.test(freshSql),
+    false
+  );
+  assert.match(freshSql, /create policy "Admin select inquiries"/i);
+  assert.match(freshSql, /create policy "Admin update inquiries"/i);
+  assert.match(freshSql, /create policy "Admin delete inquiries"/i);
   assert.match(freshSql, /property_lot_id is null\s+or exists/i);
   assert.match(freshSql, /p\.visibility = 'Published'\s+and p\.is_archived = false/i);
 
-  // Frontend createInquiry payload must omit status/id/created_at for anon column-level INSERT
+  // Frontend createInquiry payload must omit status/id/created_at for anon & authenticated column-level INSERT
   const createInquiryBlock = propertyServiceSrc.slice(
     propertyServiceSrc.indexOf('async createInquiry('),
     propertyServiceSrc.indexOf('async updateInquiryStatus(')
@@ -501,12 +520,119 @@ test('Consolidated fresh-install SQL migration and frontend queries pass securit
   );
   assert.equal(/\bstatus\s*:/.test(supabaseInsertSection), false);
 
-  // 5. Private document & Storage bucket isolation invariants
+  // 5. Private document, unapproved image, unpublish demotion & Storage bucket isolation invariants
   assert.match(freshSql, /constraint property_images_bucket_public_check/i);
   assert.match(freshSql, /constraint property_documents_bucket_visibility_check/i);
   assert.match(freshSql, /constraint properties_published_contact_check/i);
+  assert.match(freshSql, /create or replace function public\.enforce_media_public_scope\(\)/i);
+  assert.match(freshSql, /create or replace function public\.demote_media_on_property_unpublish\(\)/i);
   assert.match(freshSql, /'property-media-private',\s*'property-media-private',\s*false,/i);
-  assert.match(freshSql, /bucket_id = 'property-media-public'\s+and \(storage\.foldername\(name\)\)\[2\] in \('images', 'documents'\)/i);
+  assert.match(
+    freshSql,
+    /bucket_id = 'property-media-public'\s+and \(storage\.foldername\(name\)\)\[2\] in \('images', 'documents'\)/i
+  );
+  assert.match(freshSql, /pi\.is_approved_public = true/i);
+
+  const storageServiceSrc = readFileSync(
+    join(process.cwd(), 'src/services/storageService.ts'),
+    'utf8'
+  );
+  assert.match(storageServiceSrc, /\.from\(PUBLIC_MEDIA_BUCKET\)\s*\.remove\(\[storagePath\]\)/);
+
+  const rlsRegressionSql = readFileSync(
+    join(process.cwd(), 'supabase/tests/rls_security_regression.sql'),
+    'utf8'
+  );
+  assert.match(rlsRegressionSql, /foreach role_name in array array\['anon', 'authenticated'\]/i);
+  assert.match(rlsRegressionSql, /set local role authenticated;/i);
+  assert.match(rlsRegressionSql, /post_unpublish_obj_count/i);
 });
+
+test('Private documents and unapproved images never target public Storage, and unpublishing demotes all published media', async () => {
+  // Unapproved images never target public Storage even on Published properties
+  assert.equal(resolveImageUploadBucket(false, true), PRIVATE_MEDIA_BUCKET);
+  assert.equal(resolveImageUploadBucket(false, false), PRIVATE_MEDIA_BUCKET);
+  assert.equal(resolveImageUploadBucket(true, false), PRIVATE_MEDIA_BUCKET);
+  assert.equal(resolveImageUploadBucket(true, true), PUBLIC_MEDIA_BUCKET);
+
+  // Private documents never target public Storage, and Draft documents stay in private Storage
+  assert.equal(resolveDocumentUploadBucket('Private', true), PRIVATE_MEDIA_BUCKET);
+  assert.equal(resolveDocumentUploadBucket('Private', false), PRIVATE_MEDIA_BUCKET);
+  assert.equal(resolveDocumentUploadBucket('Public', false), PRIVATE_MEDIA_BUCKET);
+  assert.equal(resolveDocumentUploadBucket('Public', true), PUBLIC_MEDIA_BUCKET);
+
+  const sampleImages: PropertyImageItem[] = [
+    {
+      id: 'img-pub',
+      url: 'https://example.invalid/pub.webp',
+      caption: 'Approved',
+      isCover: true,
+      sortOrder: 0,
+      isApprovedPublic: true,
+      storageBucket: PUBLIC_MEDIA_BUCKET,
+      storagePath: 'LOT-001/images/pub.webp',
+    },
+    {
+      id: 'img-unapproved',
+      url: 'https://example.invalid/priv.webp',
+      caption: 'Internal survey',
+      isCover: false,
+      sortOrder: 1,
+      isApprovedPublic: false,
+      storageBucket: PUBLIC_MEDIA_BUCKET,
+      storagePath: 'LOT-001/images/priv.webp',
+    },
+  ];
+
+  // Publishing keeps unapproved image in private bucket
+  const publishedImgs = await prepareImagesForVisibility(sampleImages, 'Published');
+  assert.equal(publishedImgs[0].storageBucket, PUBLIC_MEDIA_BUCKET);
+  assert.equal(publishedImgs[0].isApprovedPublic, true);
+  assert.equal(publishedImgs[1].storageBucket, PRIVATE_MEDIA_BUCKET);
+  assert.equal(publishedImgs[1].isApprovedPublic, false);
+
+  // Unpublishing (Draft or Archived) demotes ALL images back to private bucket
+  const draftedImgs = await prepareImagesForVisibility(publishedImgs, 'Draft');
+  assert.equal(draftedImgs[0].storageBucket, PRIVATE_MEDIA_BUCKET);
+  assert.equal(draftedImgs[0].isApprovedPublic, false);
+  assert.equal(draftedImgs[1].storageBucket, PRIVATE_MEDIA_BUCKET);
+  assert.equal(draftedImgs[1].isApprovedPublic, false);
+
+  const sampleDocs: PropertyDocumentItem[] = [
+    {
+      id: 'doc-pub',
+      title: 'Public Brochure',
+      category: 'PDF Brochure',
+      visibility: 'Public',
+      storageBucket: PUBLIC_MEDIA_BUCKET,
+      storagePath: 'LOT-001/documents/brochure.pdf',
+      fileName: 'brochure.pdf',
+      mimeType: 'application/pdf',
+      fileSizeBytes: 5000,
+      uploadedAt: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'doc-priv',
+      title: 'Confidential TCT',
+      category: 'Title Document',
+      visibility: 'Private',
+      storageBucket: PUBLIC_MEDIA_BUCKET,
+      storagePath: 'LOT-001/documents/tct.pdf',
+      fileName: 'tct.pdf',
+      mimeType: 'application/pdf',
+      fileSizeBytes: 5000,
+      uploadedAt: '2026-01-01T00:00:00.000Z',
+    },
+  ];
+
+  const publishedDocs = await prepareDocumentsForVisibility(sampleDocs, 'Published');
+  assert.equal(publishedDocs[0].storageBucket, PUBLIC_MEDIA_BUCKET);
+  assert.equal(publishedDocs[1].storageBucket, PRIVATE_MEDIA_BUCKET);
+
+  const archivedDocs = await prepareDocumentsForVisibility(publishedDocs, 'Archived');
+  assert.equal(archivedDocs[0].storageBucket, PRIVATE_MEDIA_BUCKET);
+  assert.equal(archivedDocs[1].storageBucket, PRIVATE_MEDIA_BUCKET);
+});
+
 
 

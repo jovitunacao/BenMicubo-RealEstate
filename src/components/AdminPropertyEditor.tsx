@@ -191,6 +191,9 @@ export function AdminPropertyEditor({
     ];
   });
   const [dragImageIndex, setDragImageIndex] = useState<number | null>(null);
+  const [explicitlyLockedImageIds, setExplicitlyLockedImageIds] = useState<Set<string>>(
+    () => new Set()
+  );
   const [newPhotoUrl, setNewPhotoUrl] = useState('');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
   const [photoFeedback, setPhotoFeedback] = useState('');
@@ -266,22 +269,29 @@ export function AdminPropertyEditor({
       .trim()
       .toUpperCase();
 
+    const isComingFromUnpublished =
+      Boolean(initialProperty) && initialProperty?.visibility !== 'Published';
+
+    // Preserve actual current storageBucket on each image so prepareImagesForVisibility
+    // accurately promotes private->public or demotes+deletes public->private on save.
     const orderedImages = [...images]
       .sort((a, b) => {
         if (a.isCover !== b.isCover) return a.isCover ? -1 : 1;
         return a.sortOrder - b.sortOrder;
       })
-      .map((img, idx) => ({
-        ...img,
-        sortOrder: idx,
-        isCover: idx === 0 || img.isCover,
-        isApprovedPublic:
-          targetVisibility === 'Published' ? img.isApprovedPublic !== false : false,
-        storageBucket:
-          targetVisibility === 'Published' && img.isApprovedPublic !== false
-            ? ('property-media-public' as const)
-            : ('property-media-private' as const),
-      }));
+      .map((img, idx) => {
+        const approvedForPublic =
+          targetVisibility === 'Published'
+            ? img.isApprovedPublic ||
+              (isComingFromUnpublished && !explicitlyLockedImageIds.has(img.id))
+            : false;
+        return {
+          ...img,
+          sortOrder: idx,
+          isCover: idx === 0 || img.isCover,
+          isApprovedPublic: approvedForPublic,
+        };
+      });
 
     if (orderedImages.length > 0 && !orderedImages.some((img) => img.isCover)) {
       orderedImages[0].isCover = true;
@@ -359,7 +369,7 @@ export function AdminPropertyEditor({
     setError('');
     try {
       const targetLot = (isEditing && initialProperty ? initialProperty.lotId : lotId) || 'LOT-NEW';
-      const approvedPublic = visibility === 'Published';
+      const approvedPublicIntent = visibility === 'Published';
       const uploadedItems: PropertyImageItem[] = [];
       let totalSavedKb = 0;
 
@@ -369,13 +379,15 @@ export function AdminPropertyEditor({
           0,
           Math.round((optimized.originalBytes - optimized.optimizedBytes) / 1024)
         );
+        // Always stage new uploads in private Storage until property is saved & published
         const uploaded = await uploadOptimizedPropertyImage(
           targetLot,
           optimized.blob,
           optimized.fileName,
           optimized.mimeType,
-          approvedPublic,
-          optimized.dataUrl
+          approvedPublicIntent,
+          optimized.dataUrl,
+          false
         );
         uploadedItems.push({
           id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
@@ -383,7 +395,7 @@ export function AdminPropertyEditor({
           caption: '',
           isCover: images.length === 0 && uploadedItems.length === 0,
           sortOrder: images.length + uploadedItems.length,
-          isApprovedPublic: approvedPublic,
+          isApprovedPublic: approvedPublicIntent,
           storageBucket: uploaded.storageBucket,
           storagePath: uploaded.storagePath,
         });
@@ -391,7 +403,7 @@ export function AdminPropertyEditor({
 
       setImages((prev) => [...prev, ...uploadedItems]);
       setPhotoFeedback(
-        `Optimized & attached ${uploadedItems.length} photo(s) (~${totalSavedKb} KB reduced).`
+        `Optimized & staged ${uploadedItems.length} photo(s) in private storage (~${totalSavedKb} KB reduced).`
       );
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to upload selected images.');
@@ -414,7 +426,8 @@ export function AdminPropertyEditor({
         optimized.fileName,
         optimized.mimeType,
         existing.isApprovedPublic,
-        optimized.dataUrl
+        optimized.dataUrl,
+        false
       );
       setImages((prev) =>
         prev.map((item, idx) =>
@@ -428,7 +441,7 @@ export function AdminPropertyEditor({
             : item
         )
       );
-      setPhotoFeedback(`Replaced image ${index + 1} (${optimized.width}×${optimized.height}px).`);
+      setPhotoFeedback(`Replaced image ${index + 1} (${optimized.width}×${optimized.height}px). Save to sync Storage.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to replace photo.');
     } finally {
@@ -543,7 +556,8 @@ export function AdminPropertyEditor({
     try {
       const targetLot = (isEditing && initialProperty ? initialProperty.lotId : lotId) || 'LOT-NEW';
       const chosenVis: DocumentVisibility = docVisibility || 'Private';
-      const uploaded = await uploadPropertyDocumentFile(targetLot, file, chosenVis);
+      // Always stage new uploads in private Storage; public docs are promoted only on Published save
+      const uploaded = await uploadPropertyDocumentFile(targetLot, file, chosenVis, false);
       const item: PropertyDocumentItem = {
         id: `doc-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
         title: docTitle.trim() || file.name.replace(/\.[^.]+$/, ''),
@@ -1201,6 +1215,41 @@ export function AdminPropertyEditor({
                 />
 
                 <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextApproved = !img.isApprovedPublic;
+                      setExplicitlyLockedImageIds((prev) => {
+                        const next = new Set(prev);
+                        if (nextApproved) next.delete(img.id);
+                        else next.add(img.id);
+                        return next;
+                      });
+                      setImages((prev) =>
+                        prev.map((item, idx) =>
+                          idx === index ? {...item, isApprovedPublic: nextApproved} : item
+                        )
+                      );
+                    }}
+                    className={`inline-flex items-center gap-1 px-2 py-1 border rounded cursor-pointer ${
+                      img.isApprovedPublic
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                        : 'bg-amber-50 border-amber-200 text-amber-900'
+                    }`}
+                  >
+                    {img.isApprovedPublic ? (
+                      <>
+                        <Eye className="w-3 h-3" />
+                        <span>Public</span>
+                      </>
+                    ) : (
+                      <>
+                        <Lock className="w-3 h-3" />
+                        <span>Private</span>
+                      </>
+                    )}
+                  </button>
+
                   {!img.isCover && (
                     <button
                       type="button"
@@ -1553,18 +1602,11 @@ export function AdminPropertyEditor({
                     value={doc.visibility}
                     onChange={(e) => {
                       const nextVis = e.target.value as DocumentVisibility;
+                      // Keep existing storageBucket untouched until Save so prepareDocumentsForVisibility
+                      // cleanly promotes or demotes+deletes from public Storage.
                       setDocuments((prev) =>
                         prev.map((item) =>
-                          item.id === doc.id
-                            ? {
-                                ...item,
-                                visibility: nextVis,
-                                storageBucket:
-                                  nextVis === 'Public'
-                                    ? 'property-media-public'
-                                    : 'property-media-private',
-                              }
-                            : item
+                          item.id === doc.id ? {...item, visibility: nextVis} : item
                         )
                       );
                     }}
