@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" fill="none">
+  <rect width="1200" height="800" fill="#E6EFEA"/>
+  <path d="M0 360 Q280 255 560 335 T1200 310 L1200 540 L0 540 Z" fill="#789688" opacity="0.65"/>
+  <path d="M0 440 Q380 385 780 435 T1200 415 L1200 800 L0 800 Z" fill="#3B6B4B"/>
+  <!-- Terraced contour lines -->
+  <path d="M0 545 Q420 495 860 540 T1200 520" stroke="#7BAE8A" stroke-opacity="0.45" stroke-width="3"/>
+  <path d="M0 620 Q420 570 860 615 T1200 595" stroke="#7BAE8A" stroke-opacity="0.45" stroke-width="3"/>
+  <polygon points="310,485 880,470 945,670 240,695" fill="#8AC29A" fill-opacity="0.22" stroke="#FFFFFF" stroke-width="3" stroke-dasharray="10 8"/>
+  <circle cx="310" cy="485" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <circle cx="880" cy="470" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <circle cx="945" cy="670" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <circle cx="240" cy="695" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+</svg>

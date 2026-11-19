@@ -1,0 +1,6 @@
+{
+  "name": "BEN MICUBO REAL ESTATE SERVICES",
+  "description": "Verified Philippine real estate and land listings by BEN MICUBO REAL ESTATE SERVICES with QR-code property dossiers, drone video tours, and admin management.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

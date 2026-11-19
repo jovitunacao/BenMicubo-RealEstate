@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" fill="none">
+  <rect width="1200" height="800" fill="#ECEFE9"/>
+  <rect y="360" width="1200" height="440" fill="#4E7E5B"/>
+  <path d="M0 590 L1200 500 L1200 680 L0 780 Z" fill="#D8DDD6"/>
+  <path d="M0 685 L1200 590" stroke="#FFFFFF" stroke-width="4" stroke-dasharray="22 18"/>
+  <!-- Street lights & frontage posts -->
+  <g stroke="#2E3630" stroke-width="5">
+    <line x1="250" y1="570" x2="250" y2="395"/>
+    <line x1="650" y1="540" x2="650" y2="365"/>
+    <line x1="1030" y1="512" x2="1030" y2="337"/>
+  </g>
+  <g fill="#234B32">
+    <ellipse cx="120" cy="400" rx="85" ry="48"/>
+    <ellipse cx="460" cy="385" rx="95" ry="50"/>
+    <ellipse cx="860" cy="365" rx="85" ry="44"/>
+  </g>
+</svg>

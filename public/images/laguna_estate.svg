@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" fill="none">
+  <rect width="1200" height="800" fill="#EBF0EC"/>
+  <path d="M0 310 Q380 230 740 295 T1200 265 L1200 440 L0 440 Z" fill="#A5B8AC" opacity="0.5"/>
+  <rect y="420" width="1200" height="380" fill="#467653"/>
+  <!-- Wide concrete estate avenue -->
+  <path d="M0 605 L1200 520 L1200 665 L0 770 Z" fill="#D5D9D4"/>
+  <path d="M0 688 L1200 592" stroke="#F4F6F3" stroke-width="3" stroke-dasharray="22 18"/>
+  <!-- Corner residential lot highlight -->
+  <polygon points="240,460 760,445 810,550 180,590" fill="#8CC09B" fill-opacity="0.28" stroke="#FFFFFF" stroke-width="3" stroke-dasharray="10 8"/>
+  <circle cx="240" cy="460" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <circle cx="760" cy="445" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <circle cx="810" cy="550" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <circle cx="180" cy="590" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <!-- Acacia boulevard trees -->
+  <g fill="#264D34">
+    <ellipse cx="145" cy="435" rx="70" ry="38"/>
+    <ellipse cx="920" cy="420" rx="82" ry="42"/>
+    <ellipse cx="1070" cy="435" rx="64" ry="34"/>
+  </g>
+</svg>

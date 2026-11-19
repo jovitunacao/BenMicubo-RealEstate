@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 800" fill="none">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#DCE8E0"/>
+      <stop offset="55%" stop-color="#EEF3EE"/>
+      <stop offset="100%" stop-color="#F7F5EE"/>
+    </linearGradient>
+    <linearGradient id="lake" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#9BB6AD"/>
+      <stop offset="100%" stop-color="#6F9086"/>
+    </linearGradient>
+    <linearGradient id="meadow" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#4A7C59"/>
+      <stop offset="100%" stop-color="#2D5A3E"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="800" fill="url(#sky)"/>
+  <circle cx="940" cy="175" r="56" fill="#FAF6E8" opacity="0.85"/>
+  <path d="M0 400 Q260 320 510 385 T1010 360 L1200 390 L1200 540 L0 540 Z" fill="#8EA69B" opacity="0.55"/>
+  <path d="M180 415 L370 330 L495 405 L665 365 L860 420 L1200 395 L1200 560 L0 560 L0 440 Z" fill="#637E71" opacity="0.68"/>
+  <path d="M0 470 Q420 445 840 468 T1200 455 L1200 610 L0 610 Z" fill="url(#lake)" opacity="0.72"/>
+  <path d="M0 545 Q300 490 640 535 T1200 515 L1200 800 L0 800 Z" fill="url(#meadow)"/>
+  <path d="M0 640 L1200 580 L1200 800 L0 800 Z" fill="#1F442E" opacity="0.4"/>
+  <!-- Concrete access road -->
+  <path d="M45 800 L355 615 L455 615 L235 800 Z" fill="#D4D7D2"/>
+  <path d="M200 800 L405 615" stroke="#F4F5F2" stroke-width="3" stroke-dasharray="18 16"/>
+  <!-- Survey boundary markers -->
+  <polygon points="480,585 950,555 1040,710 420,745" fill="#70A37F" fill-opacity="0.22" stroke="#ECF5EF" stroke-width="3" stroke-dasharray="10 8"/>
+  <circle cx="480" cy="585" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <circle cx="950" cy="555" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <circle cx="1040" cy="710" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <circle cx="420" cy="745" r="7" fill="#FFFFFF" stroke="#6500B5" stroke-width="3"/>
+  <!-- Stylized pine & tropical trees -->
+  <g fill="#1B3E2A">
+    <ellipse cx="160" cy="560" rx="44" ry="26"/>
+    <ellipse cx="220" cy="548" rx="52" ry="30"/>
+    <ellipse cx="1060" cy="540" rx="58" ry="32"/>
+    <ellipse cx="1125" cy="556" rx="46" ry="28"/>
+  </g>
+</svg>
