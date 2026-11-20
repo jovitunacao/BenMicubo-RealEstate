@@ -46,6 +46,7 @@ import {
   getPropertyPermalink,
 } from '../utils/format';
 import {buildDistributableQrUrl, validateCanonicalSiteUrl} from '../utils/siteUrl';
+import {assessCoordinateLocationConsistency} from '../utils/googleMaps';
 import type {
   InquiryStatus,
   Property,
@@ -427,6 +428,20 @@ export function AdminDashboardPage() {
   const newInquiryCount = inquiries.filter((i) => i.status === 'New').length;
   const availableCount = activeProperties.filter((p) => p.status === 'Available').length;
   const soldCount = properties.filter((p) => p.status === 'Sold').length;
+  const propertiesNeedingGpsReview = useMemo(
+    () =>
+      properties.filter((item) => {
+        const audit = assessCoordinateLocationConsistency(item.latitude, item.longitude, {
+          barangay: item.barangay,
+          city: item.city,
+          province: item.province,
+          region: item.region,
+          title: item.title,
+        });
+        return !audit.consistent;
+      }),
+    [properties]
+  );
 
   const navItems: Array<{
     id: AdminSection;
@@ -697,6 +712,37 @@ export function AdminDashboardPage() {
                   </button>
                 </div>
 
+                {propertiesNeedingGpsReview.length > 0 && (
+                  <div className="p-5 rounded-xl border border-amber-300 bg-amber-50 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                    <div className="flex items-start gap-3">
+                      <AlertTriangle className="w-5 h-5 text-amber-700 shrink-0 mt-0.5" />
+                      <div>
+                        <h2 className="font-display text-sm font-bold text-amber-950">
+                          GPS Coordinate Verification Required ({propertiesNeedingGpsReview.length}{' '}
+                          listing{propertiesNeedingGpsReview.length === 1 ? '' : 's'})
+                        </h2>
+                        <p className="mt-1 text-xs text-amber-900">
+                          The following listings appear to have legacy sample coordinates or coordinates outside their declared region:{' '}
+                          <span className="font-mono font-semibold">
+                            {propertiesNeedingGpsReview.map((p) => p.lotId).join(', ')}
+                          </span>
+                          . Open each listing to inspect and confirm its true Google Maps pin.
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingProperty(propertiesNeedingGpsReview[0]);
+                        setModalOpen(true);
+                      }}
+                      className="h-9 px-4 text-xs font-medium text-white bg-amber-800 rounded-lg hover:bg-amber-900 whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Verify {propertiesNeedingGpsReview[0].lotId}
+                    </button>
+                  </div>
+                )}
+
                 {/* Recent Drafts & Inquiries Grid */}
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                   <div className="bg-white border border-[#E6E6EF] rounded-xl p-5 space-y-3">
@@ -941,6 +987,18 @@ export function AdminDashboardPage() {
                                 {item.images.length} photos ·{' '}
                                 {item.videos.length} videos · {item.documents.length} docs
                               </p>
+                              {!assessCoordinateLocationConsistency(item.latitude, item.longitude, {
+                                barangay: item.barangay,
+                                city: item.city,
+                                province: item.province,
+                                region: item.region,
+                                title: item.title,
+                              }).consistent && (
+                                <p className="mt-1 inline-flex items-center gap-1 text-[10px] font-medium text-amber-900 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded">
+                                  <AlertTriangle className="w-3 h-3 text-amber-700 shrink-0" />
+                                  <span>Verify GPS pin</span>
+                                </p>
+                              )}
                             </td>
                             <td className="py-3 px-3 text-right font-mono tabular-nums whitespace-nowrap">
                               <p className="font-semibold text-[#202124]">

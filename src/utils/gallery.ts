@@ -6,6 +6,8 @@ export interface GallerySlide {
   thumbUrl: string;
   caption: string;
   source: 'supabase';
+  storageBucket?: 'property-media-private' | 'property-media-public';
+  storagePath?: string;
 }
 
 export function buildPropertyGallerySlides(
@@ -32,12 +34,15 @@ export function buildPropertyGallerySlides(
           sortOrder: idx,
           isApprovedPublic: true,
           storageBucket: 'property-media-public' as const,
+          storagePath: '',
         }));
 
-  const sortedSupabase = [...supabaseItems].sort((a, b) => {
-    if (a.isCover !== b.isCover) return a.isCover ? -1 : 1;
-    return a.sortOrder - b.sortOrder;
-  });
+  const sortedSupabase = [...supabaseItems]
+    .filter((img) => Boolean(img.url && img.url.trim()))
+    .sort((a, b) => {
+      if (a.isCover !== b.isCover) return a.isCover ? -1 : 1;
+      return a.sortOrder - b.sortOrder;
+    });
 
   return sortedSupabase.map((img) => ({
     id: img.id,
@@ -45,6 +50,8 @@ export function buildPropertyGallerySlides(
     thumbUrl: img.url,
     caption: img.caption || '',
     source: 'supabase',
+    storageBucket: img.storageBucket,
+    storagePath: img.storagePath,
   }));
 }
 

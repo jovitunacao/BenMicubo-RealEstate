@@ -60,11 +60,13 @@ import {
   validateCanonicalSiteUrl,
 } from '../utils/siteUrl';
 import {
+  assessCoordinateLocationConsistency,
   buildGoogleMapsEmbedUrl,
   buildGoogleMapsPinUrl,
   buildOpenStreetMapEmbedUrl,
   formatLatLngDisplay,
   parseGoogleMapsCoordinates,
+  shouldRequireSyncConfirmation,
   validateCoordinateStrings,
 } from '../utils/googleMaps';
 import {PropertyImage} from './PropertyImage';
@@ -152,6 +154,13 @@ export function AdminPropertyEditor({
     type: 'success' | 'error';
     message: string;
   } | null>(null);
+  const [pendingGpsSync, setPendingGpsSync] = useState<{
+    latitude: number;
+    longitude: number;
+    reason: 'viewport_only' | 'differs_from_verified';
+    message: string;
+    sourceMessage: string;
+  } | null>(null);
   const [mapPreviewProvider, setMapPreviewProvider] = useState<'google' | 'osm'>('google');
 
   useEffect(() => {
@@ -164,6 +173,7 @@ export function AdminPropertyEditor({
     );
     setGoogleMapsUrl(initialProperty.googleMapsUrl ?? '');
     setGpsFeedback(null);
+    setPendingGpsSync(null);
   }, [
     initialProperty?.id,
     initialProperty?.latitude,
@@ -731,6 +741,7 @@ export function AdminPropertyEditor({
   const handleManualCoordinateChange = (nextLat: string, nextLng: string) => {
     setLatitude(nextLat);
     setLongitude(nextLng);
+    setPendingGpsSync(null);
     const check = validateCoordinateStrings(nextLat, nextLng);
     if (check.valid && check.latitude !== undefined && check.longitude !== undefined) {
       const trimmedUrl = googleMapsUrl.trim();
@@ -747,6 +758,7 @@ export function AdminPropertyEditor({
   const handleSyncMapsUrl = () => {
     const parsed = parseGoogleMapsCoordinates(googleMapsUrl);
     if (!parsed.ok || parsed.latitude === undefined || parsed.longitude === undefined) {
+      setPendingGpsSync(null);
       setGpsFeedback({
         type: 'error',
         message: parsed.message,
@@ -754,11 +766,44 @@ export function AdminPropertyEditor({
       return;
     }
 
+    const decision = shouldRequireSyncConfirmation(latitude, longitude, parsed);
+    if (decision.requireConfirmation && decision.reason !== 'none') {
+      setGpsFeedback(null);
+      setPendingGpsSync({
+        latitude: parsed.latitude,
+        longitude: parsed.longitude,
+        reason: decision.reason,
+        message: decision.message || 'Confirm before applying extracted GPS coordinates.',
+        sourceMessage: parsed.message,
+      });
+      return;
+    }
+
+    setPendingGpsSync(null);
     setLatitude(String(parsed.latitude));
     setLongitude(String(parsed.longitude));
     setGpsFeedback({
       type: 'success',
       message: parsed.message,
+    });
+  };
+
+  const handleConfirmPendingGpsSync = () => {
+    if (!pendingGpsSync) return;
+    setLatitude(String(pendingGpsSync.latitude));
+    setLongitude(String(pendingGpsSync.longitude));
+    setGpsFeedback({
+      type: 'success',
+      message: `Administrator confirmed GPS update (${pendingGpsSync.latitude}, ${pendingGpsSync.longitude}). Save the property to persist.`,
+    });
+    setPendingGpsSync(null);
+  };
+
+  const handleCancelPendingGpsSync = () => {
+    setPendingGpsSync(null);
+    setGpsFeedback({
+      type: 'success',
+      message: 'Existing saved coordinates were preserved.',
     });
   };
 
@@ -818,6 +863,18 @@ export function AdminPropertyEditor({
   const previewData = buildPropertyInput(visibility);
   const manualCoordCheck = validateCoordinateStrings(latitude, longitude);
   const hasAnyCoordInput = Boolean(latitude.trim() || longitude.trim());
+  const coordinateConsistency =
+    manualCoordCheck.valid &&
+    manualCoordCheck.latitude !== undefined &&
+    manualCoordCheck.longitude !== undefined
+      ? assessCoordinateLocationConsistency(manualCoordCheck.latitude, manualCoordCheck.longitude, {
+          barangay,
+          city,
+          province,
+          region,
+          title,
+        })
+      : null;
   const activePreviewPinUrl =
     manualCoordCheck.valid &&
     manualCoordCheck.latitude !== undefined &&
@@ -1051,7 +1108,7 @@ export function AdminPropertyEditor({
               step="any"
               value={latitude}
               onChange={(e) => handleManualCoordinateChange(e.target.value, longitude)}
-              placeholder="e.g., 14.1228"
+              placeholder="Decimal latitude"
               aria-label="Latitude"
               className={`w-full h-10 px-3 font-mono text-sm border rounded-lg focus:outline-none ${
                 hasAnyCoordInput && !manualCoordCheck.valid
@@ -1069,7 +1126,7 @@ export function AdminPropertyEditor({
               step="any"
               value={longitude}
               onChange={(e) => handleManualCoordinateChange(latitude, e.target.value)}
-              placeholder="e.g., 120.9856"
+              placeholder="Decimal longitude"
               aria-label="Longitude"
               className={`w-full h-10 px-3 font-mono text-sm border rounded-lg focus:outline-none ${
                 hasAnyCoordInput && !manualCoordCheck.valid
@@ -1089,8 +1146,9 @@ export function AdminPropertyEditor({
                 onChange={(e) => {
                   setGoogleMapsUrl(e.target.value);
                   if (gpsFeedback) setGpsFeedback(null);
+                  if (pendingGpsSync) setPendingGpsSync(null);
                 }}
-                placeholder="https://www.google.com/maps/place/.../@14.1228,120.9856,17z"
+                placeholder="Paste full Google Maps URL with pin or coordinates"
                 aria-label="Google Maps URL"
                 className="flex-1 h-10 px-3 text-xs border border-[#D6D6E4] rounded-lg focus:outline-none focus:border-[#6500B5]"
               />
@@ -1110,6 +1168,69 @@ export function AdminPropertyEditor({
             <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
             <span>{manualCoordCheck.error}</span>
           </p>
+        )}
+
+        {pendingGpsSync && (
+          <div
+            role="alert"
+            className="text-xs rounded-xl p-4 border border-amber-300 bg-amber-50 text-amber-950 space-y-3"
+          >
+            <div className="flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <p className="font-semibold">
+                  Administrator Confirmation Required Before Updating GPS Coordinates
+                </p>
+                <p className="leading-relaxed">{pendingGpsSync.message}</p>
+                <div className="pt-1 flex flex-wrap gap-x-6 gap-y-1 font-mono text-[11px]">
+                  <span>
+                    Current:{' '}
+                    {manualCoordCheck.valid &&
+                    manualCoordCheck.latitude !== undefined &&
+                    manualCoordCheck.longitude !== undefined
+                      ? `${manualCoordCheck.latitude}, ${manualCoordCheck.longitude}`
+                      : 'Unset'}
+                  </span>
+                  <span>
+                    Extracted: {pendingGpsSync.latitude}, {pendingGpsSync.longitude}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={handleConfirmPendingGpsSync}
+                className="px-3 py-1.5 text-xs font-semibold text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] cursor-pointer"
+              >
+                Confirm &amp; Apply Coordinates
+              </button>
+              <button
+                type="button"
+                onClick={handleCancelPendingGpsSync}
+                className="px-3 py-1.5 text-xs font-medium text-[#202124] bg-white border border-[#D6D6E4] rounded-lg hover:bg-[#F8F8FC] cursor-pointer"
+              >
+                Keep Existing Coordinates
+              </button>
+            </div>
+          </div>
+        )}
+
+        {coordinateConsistency && !coordinateConsistency.consistent && (
+          <div
+            role="alert"
+            className="text-xs rounded-lg px-3.5 py-2.5 border border-amber-300 bg-amber-50 text-amber-950 flex items-start gap-2"
+          >
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div className="space-y-0.5">
+              <p className="font-semibold">
+                {coordinateConsistency.isLegacyPlaceholder
+                  ? 'Legacy Sample Coordinates Detected — Verification Required'
+                  : 'Regional Location Mismatch Detected'}
+              </p>
+              <p className="leading-relaxed">{coordinateConsistency.warning}</p>
+            </div>
+          </div>
         )}
 
         {gpsFeedback && (
@@ -1596,6 +1717,8 @@ export function AdminPropertyEditor({
                     <PropertyImage
                       src={img.url}
                       alt={img.caption || `Property photo ${index + 1}`}
+                      loading="eager"
+                      compact
                       className="w-full h-full object-cover"
                     />
                     <span

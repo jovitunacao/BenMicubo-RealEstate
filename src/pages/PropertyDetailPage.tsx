@@ -26,7 +26,10 @@ import {QRCodeCanvas} from '../components/QRCodeCanvas';
 import {InquiryForm} from '../components/InquiryForm';
 import {ShareListingButton} from '../components/ShareListingButton';
 import {filterPublicDocuments, isPropertyPubliclyVisible} from '../services/propertyService';
-import {getAuthorizedDocumentDownloadUrl} from '../services/storageService';
+import {
+  getAuthorizedDocumentDownloadUrl,
+  refreshPrivateImageSignedUrl,
+} from '../services/storageService';
 import {
   buildMessengerLink,
   buildWhatsAppLink,
@@ -313,7 +316,7 @@ export function PropertyDetailPage() {
 
       <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-7 sm:pt-9">
         {/* Curated Gallery Frame */}
-        <section aria-label="Property photos">
+        <section aria-label="Property photos" className="min-w-0 max-w-full">
           <div
             onTouchStart={handleGalleryTouchStart}
             onTouchEnd={handleGalleryTouchEnd}
@@ -327,6 +330,13 @@ export function PropertyDetailPage() {
               }
               fallbackTitle={property.title}
               loading="eager"
+              onRecoverSignedUrl={
+                isPreviewAllowed &&
+                currentImage?.storageBucket === 'property-media-private' &&
+                currentImage?.storagePath
+                  ? () => refreshPrivateImageSignedUrl(currentImage.storagePath!)
+                  : undefined
+              }
               className="w-full h-full object-cover"
             />
 
@@ -377,23 +387,36 @@ export function PropertyDetailPage() {
           </div>
 
           {galleryImages.length > 1 && (
-            <div className="mt-3 flex items-center gap-2.5 overflow-x-auto pb-1">
+            <div
+              role="region"
+              aria-label="Gallery thumbnails"
+              className="mt-3 flex items-center gap-2.5 overflow-x-auto pb-1.5 max-w-full"
+            >
               {galleryImages.map((img, index) => (
                 <button
                   key={img.id || `${img.url}-${index}`}
                   type="button"
                   onClick={() => setActivePhotoIndex(index)}
                   aria-label={`Select photo ${index + 1}`}
-                  className={`relative w-24 h-16 overflow-hidden border shrink-0 cursor-pointer transition-opacity ${
+                  aria-pressed={safeActiveIndex === index}
+                  className={`relative block w-24 h-16 sm:w-28 sm:h-[72px] overflow-hidden border shrink-0 cursor-pointer transition-all bg-[#F4F0E8] ${
                     safeActiveIndex === index
-                      ? 'border-[#B89B6A] ring-2 ring-[#B89B6A]/40 opacity-100'
-                      : 'border-[#E2DDD3] opacity-70 hover:opacity-100'
+                      ? 'border-[#B89B6A] ring-2 ring-[#B89B6A]/45 opacity-100'
+                      : 'border-[#E2DDD3] opacity-80 hover:opacity-100'
                   }`}
                 >
                   <PropertyImage
                     src={img.thumbUrl}
                     alt={img.caption || `${property.title} thumbnail ${index + 1}`}
-                    loading="lazy"
+                    loading="eager"
+                    compact
+                    onRecoverSignedUrl={
+                      isPreviewAllowed &&
+                      img.storageBucket === 'property-media-private' &&
+                      img.storagePath
+                        ? () => refreshPrivateImageSignedUrl(img.storagePath!)
+                        : undefined
+                    }
                     className="w-full h-full object-cover"
                   />
                 </button>
@@ -405,7 +428,7 @@ export function PropertyDetailPage() {
         {/* Main 2-Column Editorial Dossier Canvas */}
         <div className="mt-9 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
           {/* Left Editorial Narrative & Technical Ledger Column */}
-          <div className="lg:col-span-7 space-y-11">
+          <div className="lg:col-span-7 min-w-0 space-y-11">
             {/* Title & Valuation Header */}
             <header className="pb-7 border-b border-[#E2DDD3]">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -603,7 +626,7 @@ export function PropertyDetailPage() {
             </section>
 
             {/* Multiple Videos Section */}
-            <section aria-labelledby="video-heading" className="space-y-5">
+            <section aria-labelledby="video-heading" className="space-y-5 min-w-0 max-w-full">
               <div>
                 <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
                   Motion Documentation
@@ -616,11 +639,11 @@ export function PropertyDetailPage() {
               {videos.length === 0 ? (
                 <PropertyVideoPlayer url="" title={property.title} posterFallback={currentPhoto} />
               ) : (
-                <div className="space-y-6">
+                <div className="space-y-6 min-w-0 max-w-full">
                   {videos.map((vid) => {
                     const parsed = parsePropertyVideoUrl(vid.url);
                     return (
-                      <div key={vid.id} className="space-y-2">
+                      <div key={vid.id} className="space-y-2 min-w-0 max-w-full">
                         <div className="flex items-start justify-between gap-3">
                           <div>
                             <h3 className="text-sm font-semibold text-[#1C1B19]">
@@ -935,6 +958,13 @@ export function PropertyDetailPage() {
               src={currentPhoto}
               alt={currentImage?.caption || `${property.title} full view`}
               loading="eager"
+              onRecoverSignedUrl={
+                isPreviewAllowed &&
+                currentImage?.storageBucket === 'property-media-private' &&
+                currentImage?.storagePath
+                  ? () => refreshPrivateImageSignedUrl(currentImage.storagePath!)
+                  : undefined
+              }
               className="max-h-[80vh] w-auto object-contain"
             />
           </div>

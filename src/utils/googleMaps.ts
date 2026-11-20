@@ -411,3 +411,215 @@ export function parseGoogleMapsCoordinates(rawInput: string): ParsedGoogleMapsRe
     message: 'Unable to identify GPS coordinates from this Google Maps link.',
   };
 }
+
+export const LEGACY_PLACEHOLDER_COORDINATES = [
+  {
+    label: 'Legacy LOT-001 Tagaytay Sample Pin',
+    latitude: 14.1228,
+    longitude: 120.9856,
+  },
+] as const;
+
+export function haversineDistanceMeters(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const earthRadiusMeters = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return earthRadiusMeters * c;
+}
+
+export function isLegacyPlaceholderCoordinate(
+  latitude: number,
+  longitude: number
+): boolean {
+  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) return false;
+  return LEGACY_PLACEHOLDER_COORDINATES.some(
+    (sample) => haversineDistanceMeters(latitude, longitude, sample.latitude, sample.longitude) <= 150
+  );
+}
+
+export interface CoordinateLocationConsistencyResult {
+  consistent: boolean;
+  isLegacyPlaceholder: boolean;
+  warning?: string;
+}
+
+interface RegionalBoundingBox {
+  name: string;
+  keywords: RegExp;
+  minLat: number;
+  maxLat: number;
+  minLng: number;
+  maxLng: number;
+}
+
+const PHILIPPINE_REGIONAL_BOUNDS: RegionalBoundingBox[] = [
+  {
+    name: 'Zamboanga Peninsula / Mindanao',
+    keywords: /\b(zamboanga|tetuan|davao|cagayan de oro|general santos|bukidnon|surigao|siargao|butuan|iligan|cotabato|pagadian|dipolog|mindanao|caraga|soccsksargen)\b/i,
+    minLat: 4.3,
+    maxLat: 10.6,
+    minLng: 119.0,
+    maxLng: 127.0,
+  },
+  {
+    name: 'Visayas',
+    keywords: /\b(cebu|bohol|iloilo|bacolod|negros|tacloban|leyte|samar|boracay|aklan|dumaguete|visayas)\b/i,
+    minLat: 8.8,
+    maxLat: 12.9,
+    minLng: 121.6,
+    maxLng: 126.2,
+  },
+  {
+    name: 'Palawan / MIMAROPA',
+    keywords: /\b(palawan|el nido|coron|puerto princesa|san vicente|mimaropa|mindoro)\b/i,
+    minLat: 7.5,
+    maxLat: 13.8,
+    minLng: 116.5,
+    maxLng: 122.3,
+  },
+  {
+    name: 'Metro Manila / CALABARZON / Luzon',
+    keywords: /\b(tagaytay|cavite|alfonso|batangas|laguna|calabarzon|metro manila|makati|bgc|taguig|quezon city|bulacan|pampanga|baguio|benguet|ilocos|pangasinan|tarlac|zambales|bataan)\b/i,
+    minLat: 12.5,
+    maxLat: 18.8,
+    minLng: 119.5,
+    maxLng: 124.5,
+  },
+];
+
+export function assessCoordinateLocationConsistency(
+  latitude: number | undefined,
+  longitude: number | undefined,
+  location: {city?: string; province?: string; region?: string; barangay?: string; title?: string}
+): CoordinateLocationConsistencyResult {
+  if (
+    latitude === undefined ||
+    longitude === undefined ||
+    !Number.isFinite(latitude) ||
+    !Number.isFinite(longitude)
+  ) {
+    return {
+      consistent: false,
+      isLegacyPlaceholder: false,
+      warning: 'GPS coordinates are missing or invalid. Verify the exact site pin in Google Maps.',
+    };
+  }
+
+  const locationText = [
+    location.barangay,
+    location.city,
+    location.province,
+    location.region,
+    location.title,
+  ]
+    .filter(Boolean)
+    .join(' ');
+
+  const isLegacySample = isLegacyPlaceholderCoordinate(latitude, longitude);
+  const isTagaytayOrCavite = /\b(tagaytay|cavite|sungay|mendez|alfonso)\b/i.test(locationText);
+
+  if (isLegacySample && locationText.trim() && !isTagaytayOrCavite) {
+    return {
+      consistent: false,
+      isLegacyPlaceholder: true,
+      warning: `Coordinates (${latitude.toFixed(6)}, ${longitude.toFixed(6)}) match legacy Tagaytay sample/placeholder coordinates and do not match "${[location.city, location.province].filter(Boolean).join(', ')}". Paste the verified site Google Maps link or confirm exact coordinates.`,
+    };
+  }
+
+  if (locationText.trim()) {
+    for (const regionBound of PHILIPPINE_REGIONAL_BOUNDS) {
+      if (regionBound.keywords.test(locationText)) {
+        const inside =
+          latitude >= regionBound.minLat &&
+          latitude <= regionBound.maxLat &&
+          longitude >= regionBound.minLng &&
+          longitude <= regionBound.maxLng;
+        if (!inside) {
+          return {
+            consistent: false,
+            isLegacyPlaceholder: isLegacySample,
+            warning: `Coordinates (${latitude.toFixed(6)}, ${longitude.toFixed(6)}) fall outside the expected ${regionBound.name} region for "${[location.city, location.province].filter(Boolean).join(', ')}". Verify the exact property pin before saving.`,
+          };
+        }
+        break;
+      }
+    }
+  }
+
+  return {
+    consistent: true,
+    isLegacyPlaceholder: isLegacySample && !isTagaytayOrCavite,
+  };
+}
+
+export interface GpsSyncConfirmationDecision {
+  requireConfirmation: boolean;
+  reason: 'none' | 'viewport_only' | 'differs_from_verified';
+  distanceMeters?: number;
+  message?: string;
+}
+
+export function shouldRequireSyncConfirmation(
+  existingLatitude: string | number | undefined,
+  existingLongitude: string | number | undefined,
+  parsed: ParsedGoogleMapsResult
+): GpsSyncConfirmationDecision {
+  if (!parsed.ok || parsed.latitude === undefined || parsed.longitude === undefined) {
+    return {requireConfirmation: false, reason: 'none'};
+  }
+
+  const existingCheck = validateCoordinates(existingLatitude, existingLongitude);
+  const hasExistingValid =
+    existingCheck.valid &&
+    existingCheck.latitude !== undefined &&
+    existingCheck.longitude !== undefined;
+
+  const distanceMeters = hasExistingValid
+    ? haversineDistanceMeters(
+        existingCheck.latitude!,
+        existingCheck.longitude!,
+        parsed.latitude,
+        parsed.longitude
+      )
+    : undefined;
+
+  if (parsed.isViewportOnly) {
+    return {
+      requireConfirmation: true,
+      reason: 'viewport_only',
+      distanceMeters,
+      message: hasExistingValid
+        ? 'This Google Maps URL only contains map viewport center coordinates (@lat,lng), not an exact dropped pin. Confirm before replacing existing saved coordinates.'
+        : 'This Google Maps URL only contains map viewport center coordinates (@lat,lng), not an exact dropped pin. Confirm that the viewport pin marks the actual property.',
+    };
+  }
+
+  if (hasExistingValid && distanceMeters !== undefined && distanceMeters > 25) {
+    const distanceLabel =
+      distanceMeters >= 1000
+        ? `${(distanceMeters / 1000).toFixed(1)} km`
+        : `${Math.round(distanceMeters)} m`;
+    return {
+      requireConfirmation: true,
+      reason: 'differs_from_verified',
+      distanceMeters,
+      message: `Extracted coordinates differ from the existing saved coordinates by ${distanceLabel}. Confirm before overwriting existing coordinates.`,
+    };
+  }
+
+  return {
+    requireConfirmation: false,
+    reason: 'none',
+    distanceMeters,
+  };
+}
