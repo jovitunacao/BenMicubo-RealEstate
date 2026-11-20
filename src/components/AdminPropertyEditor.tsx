@@ -195,7 +195,10 @@ export function AdminPropertyEditor({
     String(initialProperty?.priceTotalPhp ?? 10000000)
   );
   const [isNegotiable, setIsNegotiable] = useState(initialProperty?.isNegotiable ?? false);
-  const [dimensions, setDimensions] = useState(initialProperty?.dimensions ?? '20m × 25m');
+  const [dimensions, setDimensions] = useState(initialProperty?.dimensions ?? '');
+  const [showLotDimensions, setShowLotDimensions] = useState<boolean>(
+    initialProperty?.showLotDimensions ?? true
+  );
   const [boundaryDescription, setBoundaryDescription] = useState(
     initialProperty?.boundaryDescription ?? ''
   );
@@ -368,7 +371,8 @@ export function AdminPropertyEditor({
       region: region.trim() || 'Philippines',
       completeLocation: resolvedCompleteLocation,
       lotAreaSqm: numericArea,
-      dimensions: dimensions.trim() || 'Standard parcel',
+      dimensions: dimensions.trim(),
+      showLotDimensions,
       boundaryDescription: boundaryDescription.trim(),
       pricePerSqm: effectiveRatePerSqm,
       priceTotalPhp: effectiveTotalPrice,
@@ -1421,18 +1425,38 @@ export function AdminPropertyEditor({
           </label>
         </div>
 
+        <div className="p-3.5 rounded-lg border border-[#E6E6EF] bg-[#F8F8FC] space-y-1.5">
+          <label className="inline-flex items-center gap-2.5 text-xs font-semibold text-[#202124] cursor-pointer">
+            <input
+              type="checkbox"
+              checked={showLotDimensions}
+              onChange={(e) => setShowLotDimensions(e.target.checked)}
+              className="accent-[#6500B5] w-4 h-4"
+            />
+            <span>Show Lot Dimensions on Public Listing</span>
+          </label>
+          <p className="text-[11px] text-[#4B4D57] pl-6 leading-relaxed">
+            Disable for irregularly shaped lots or properties where simple length × width measurements are not applicable.
+          </p>
+        </div>
+
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-medium text-[#4B4D57] mb-1">
-              Lot Dimensions
+              Lot Dimensions {showLotDimensions ? '(Optional)' : '(Hidden on Public Listing)'}
             </label>
             <input
               type="text"
               value={dimensions}
               onChange={(e) => setDimensions(e.target.value)}
-              placeholder="25m frontage × 48m depth"
+              placeholder="e.g., 25m frontage × 48m depth"
               className="w-full h-10 px-3 text-sm border border-[#D6D6E4] rounded-lg focus:outline-none focus:border-[#6500B5]"
             />
+            {!showLotDimensions && (
+              <p className="mt-1 text-[11px] text-[#696B77]">
+                Saved value is preserved for admin reference and completely omitted from public listings, A4 dossiers, and QR signage.
+              </p>
+            )}
           </div>
           <div>
             <label className="block text-xs font-medium text-[#4B4D57] mb-1">

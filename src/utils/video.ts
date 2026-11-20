@@ -162,3 +162,69 @@ export function parsePropertyVideoUrl(rawUrl: string): ParsedPropertyVideo | nul
 export function isValidPropertyVideoUrl(rawUrl: string): boolean {
   return parsePropertyVideoUrl(rawUrl) !== null;
 }
+
+export interface MobileDetectionEnvironment {
+  userAgent?: string;
+  platform?: string;
+  maxTouchPoints?: number;
+  coarsePointer?: boolean;
+  userAgentDataMobile?: boolean;
+}
+
+/**
+ * Reliable mobile/tablet device detection using UA, iPadOS touch capability,
+ * UA-CH mobile hint, and primary coarse pointer — NOT viewport width alone.
+ */
+export function detectMobilePlaybackEnvironment(
+  env?: MobileDetectionEnvironment
+): boolean {
+  const resolved: MobileDetectionEnvironment = env ?? (() => {
+    if (typeof window === 'undefined' && typeof navigator === 'undefined') {
+      return {};
+    }
+    const nav = typeof navigator !== 'undefined' ? navigator : undefined;
+    const navAny = nav as (Navigator & {userAgentData?: {mobile?: boolean}}) | undefined;
+    const coarse =
+      typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+        ? window.matchMedia('(pointer: coarse)').matches
+        : false;
+    return {
+      userAgent: nav?.userAgent || '',
+      platform: nav?.platform || '',
+      maxTouchPoints: nav?.maxTouchPoints ?? 0,
+      coarsePointer: coarse,
+      userAgentDataMobile: navAny?.userAgentData?.mobile,
+    };
+  })();
+
+  if (resolved.userAgentDataMobile === true) {
+    return true;
+  }
+
+  const ua = resolved.userAgent || '';
+  if (/Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(ua)) {
+    return true;
+  }
+
+  const touchPoints = resolved.maxTouchPoints ?? 0;
+  // iPadOS Safari ("Request Desktop Website") reports Macintosh / MacIntel with multi-touch
+  if ((/Macintosh/i.test(ua) || resolved.platform === 'MacIntel') && touchPoints > 1) {
+    return true;
+  }
+
+  if (resolved.coarsePointer && touchPoints > 0) {
+    return true;
+  }
+
+  return false;
+}
+
+export function resolveVideoRenderMode(
+  provider: VideoProvider,
+  isMobileDevice: boolean
+): 'mobile_external_card' | 'inline_embed' {
+  if (provider === 'google_drive' && isMobileDevice) {
+    return 'mobile_external_card';
+  }
+  return 'inline_embed';
+}

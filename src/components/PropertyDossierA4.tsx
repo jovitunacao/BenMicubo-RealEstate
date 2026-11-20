@@ -166,13 +166,25 @@ export function PropertyDossierA4({dossier, onDownloadDocument}: PropertyDossier
               </div>
             </div>
 
-            <dl className="grid grid-cols-2 sm:grid-cols-4 border-b border-[#E2DDD3]">
+            <dl
+              className={`grid border-b border-[#E2DDD3] ${
+                dossier.executiveMetrics.length === 3
+                  ? 'grid-cols-1 sm:grid-cols-3'
+                  : 'grid-cols-2 sm:grid-cols-4'
+              }`}
+            >
               {dossier.executiveMetrics.map((metric, idx) => (
                 <div
                   key={metric.label}
                   className={`py-3.5 ${
-                    idx > 0 ? 'sm:pl-4 sm:border-l sm:border-[#E2DDD3]' : 'pr-3'
-                  } ${idx % 2 === 1 ? 'pl-4 border-l border-[#E2DDD3] sm:pl-4' : 'pr-3'}`}
+                    idx > 0
+                      ? 'sm:pl-4 sm:border-l sm:border-[#E2DDD3] border-t border-[#E2DDD3] sm:border-t-0'
+                      : 'pr-3'
+                  } ${
+                    dossier.executiveMetrics.length !== 3 && idx % 2 === 1
+                      ? 'pl-4 border-l border-[#E2DDD3] sm:pl-4'
+                      : 'pr-3'
+                  }`}
                 >
                   <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
                     {metric.label}

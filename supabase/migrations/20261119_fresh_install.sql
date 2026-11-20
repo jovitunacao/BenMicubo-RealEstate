@@ -69,6 +69,7 @@ create table if not exists public.properties (
   complete_location text not null default '',
   lot_area_sqm numeric not null check (lot_area_sqm > 0),
   dimensions text not null default '',
+  show_lot_dimensions boolean not null default true,
   boundary_description text not null default '',
   price_per_sqm numeric not null default 0 check (price_per_sqm >= 0),
   price_total_php numeric not null check (price_total_php >= 0),

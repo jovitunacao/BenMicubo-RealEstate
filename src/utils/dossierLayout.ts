@@ -14,6 +14,7 @@ import {
   formatPhp,
   formatSqm,
   getPropertyPermalink,
+  shouldDisplayLotDimensions,
 } from './format';
 import {buildPropertyGallerySlides, type GallerySlide} from './gallery';
 import {
@@ -265,22 +266,22 @@ export function buildPropertyDossierModel(
   const useCompactTwoColumnNarrative =
     totalDescChars > 950 || descriptionParagraphs.length >= 4;
 
-  const specificationLedger: DossierSpecItem[] = [
-    {
-      label: 'Property Location',
-      value: completeLocation,
-      fullWidth: true,
-    },
+  const showLotDimensions = shouldDisplayLotDimensions(property);
+  const halfWidthSpecs: DossierSpecItem[] = [
     {
       label: 'Lot Area',
       value: formatSqm(property.lotAreaSqm),
       mono: true,
     },
-    {
-      label: 'Lot Dimensions',
-      value: (property.dimensions || '').trim() || 'Available upon survey review',
-      mono: true,
-    },
+    ...(showLotDimensions
+      ? [
+          {
+            label: 'Lot Dimensions',
+            value: property.dimensions.trim(),
+            mono: true,
+          },
+        ]
+      : []),
     {
       label: 'Land Classification',
       value: property.classification,
@@ -307,6 +308,20 @@ export function buildPropertyDossierModel(
       label: 'Utilities & Infrastructure',
       value: (property.utilities || '').trim() || 'Subject to municipal connection verification',
     },
+  ];
+
+  // Auto-balance 2-column grid so hiding Lot Dimensions never leaves an orphan blank cell
+  if (halfWidthSpecs.length % 2 === 1 && halfWidthSpecs.length > 0) {
+    halfWidthSpecs[0] = {...halfWidthSpecs[0], fullWidth: true};
+  }
+
+  const specificationLedger: DossierSpecItem[] = [
+    {
+      label: 'Property Location',
+      value: completeLocation,
+      fullWidth: true,
+    },
+    ...halfWidthSpecs,
   ];
 
   if ((property.boundaryDescription || '').trim()) {
@@ -397,16 +412,20 @@ export function buildPropertyDossierModel(
     pricePerSqmLabel: `${formatPhp(pricePerSqm)} / sqm`,
     isNegotiable: property.isNegotiable,
     lotAreaLabel: formatSqm(property.lotAreaSqm),
-    dimensionsLabel: (property.dimensions || '').trim() || 'Upon survey review',
+    dimensionsLabel: showLotDimensions ? property.dimensions.trim() : '',
     titleStatusLabel: (property.titleStatus || '').trim() || 'Upon verification',
     updatedAtLabel: formatDateShort(property.updatedAt),
     executiveMetrics: [
       {label: 'Lot Area', value: formatSqm(property.lotAreaSqm), mono: true},
-      {
-        label: 'Dimensions',
-        value: (property.dimensions || '').trim() || 'Survey pending',
-        mono: true,
-      },
+      ...(showLotDimensions
+        ? [
+            {
+              label: 'Dimensions',
+              value: property.dimensions.trim(),
+              mono: true,
+            },
+          ]
+        : []),
       {label: 'Classification', value: property.classification},
       {
         label: 'Title Status',

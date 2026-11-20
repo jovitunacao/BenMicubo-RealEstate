@@ -1,7 +1,12 @@
 import {Link} from 'react-router-dom';
 import {ArrowUpRight, QrCode} from 'lucide-react';
 import type {Property} from '../types/property';
-import {computePricePerSqm, formatPhp, formatSqm} from '../utils/format';
+import {
+  computePricePerSqm,
+  formatPhp,
+  formatSqm,
+  shouldDisplayLotDimensions,
+} from '../utils/format';
 import {PropertyImage} from './PropertyImage';
 import {StatusIndicator} from './StatusIndicator';
 
@@ -52,8 +57,12 @@ export function PropertyCard({property}: PropertyCardProps) {
             <span>{formatSqm(property.lotAreaSqm)}</span>
             <span aria-hidden="true">·</span>
             <span>{property.classification}</span>
-            <span aria-hidden="true">·</span>
-            <span className="truncate">{property.dimensions}</span>
+            {shouldDisplayLotDimensions(property) && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="truncate">{property.dimensions}</span>
+              </>
+            )}
           </p>
         </div>
 

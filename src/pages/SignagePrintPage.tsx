@@ -4,7 +4,7 @@ import {AlertTriangle, ArrowLeft, MapPin, Phone, Printer, Settings} from 'lucide
 import {usePropertyStore} from '../context/PropertyStoreContext';
 import {CompanyLogo} from '../components/CompanyLogo';
 import {QRCodeCanvas} from '../components/QRCodeCanvas';
-import {formatPhp, formatSqm} from '../utils/format';
+import {formatPhp, formatSqm, shouldDisplayLotDimensions} from '../utils/format';
 import {buildDistributableQrUrl} from '../utils/siteUrl';
 
 export function SignagePrintPage() {
@@ -151,11 +151,15 @@ export function SignagePrintPage() {
 
             <div className="w-full max-w-lg border-t border-b border-[#E6E6EF] py-5 grid grid-cols-1 sm:grid-cols-2 gap-4 text-left">
               <div>
-                <p className="text-xs text-[#696B77]">Lot Area &amp; Dimensions</p>
+                <p className="text-xs text-[#696B77]">
+                  {shouldDisplayLotDimensions(property) ? 'Lot Area & Dimensions' : 'Lot Area'}
+                </p>
                 <p className="mt-0.5 font-display text-lg font-bold text-[#202124] tabular-nums">
                   {formatSqm(property.lotAreaSqm)}
                 </p>
-                <p className="text-xs text-[#4B4D57] tabular-nums">{property.dimensions}</p>
+                {shouldDisplayLotDimensions(property) && (
+                  <p className="text-xs text-[#4B4D57] tabular-nums">{property.dimensions}</p>
+                )}
               </div>
               <div>
                 <p className="text-xs text-[#696B77]">Location</p>

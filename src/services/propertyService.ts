@@ -140,6 +140,8 @@ export function normalizeProperty(raw: Partial<Property> & {id: string; lotId: s
       [raw.barangay, raw.city, raw.province].filter(Boolean).join(', '),
     lotAreaSqm,
     dimensions: raw.dimensions || '',
+    showLotDimensions:
+      raw.showLotDimensions === undefined ? true : Boolean(raw.showLotDimensions),
     boundaryDescription: raw.boundaryDescription || '',
     pricePerSqm,
     priceTotalPhp,
@@ -361,6 +363,7 @@ interface SupabasePropertyRow {
   complete_location?: string;
   lot_area_sqm: number;
   dimensions: string;
+  show_lot_dimensions?: boolean;
   boundary_description?: string;
   price_per_sqm?: number;
   price_total_php: number;
@@ -468,6 +471,10 @@ function mapRowToProperty(row: SupabasePropertyRow): Property {
     completeLocation: row.complete_location || '',
     lotAreaSqm: Number(row.lot_area_sqm),
     dimensions: row.dimensions,
+    showLotDimensions:
+      row.show_lot_dimensions === undefined || row.show_lot_dimensions === null
+        ? true
+        : Boolean(row.show_lot_dimensions),
     boundaryDescription: row.boundary_description || '',
     pricePerSqm:
       row.price_per_sqm !== undefined ? Number(row.price_per_sqm) : undefined,
@@ -521,6 +528,8 @@ function mapPropertyToRow(input: PropertyInput) {
     complete_location: input.completeLocation,
     lot_area_sqm: input.lotAreaSqm,
     dimensions: input.dimensions,
+    show_lot_dimensions:
+      input.showLotDimensions === undefined ? true : Boolean(input.showLotDimensions),
     boundary_description: input.boundaryDescription,
     price_per_sqm: input.pricePerSqm,
     price_total_php: input.priceTotalPhp,
@@ -599,6 +608,7 @@ async function restorePropertyRowSnapshot(
         complete_location: prevRow.complete_location || '',
         lot_area_sqm: prevRow.lot_area_sqm,
         dimensions: prevRow.dimensions,
+        show_lot_dimensions: prevRow.show_lot_dimensions ?? true,
         boundary_description: prevRow.boundary_description || '',
         price_per_sqm: prevRow.price_per_sqm ?? 0,
         price_total_php: prevRow.price_total_php,

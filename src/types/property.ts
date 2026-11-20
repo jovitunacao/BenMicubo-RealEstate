@@ -67,6 +67,7 @@ export interface Property {
   completeLocation: string;
   lotAreaSqm: number;
   dimensions: string;
+  showLotDimensions?: boolean;
   boundaryDescription: string;
   pricePerSqm: number;
   priceTotalPhp: number;

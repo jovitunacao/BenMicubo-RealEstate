@@ -39,6 +39,7 @@ import {
   formatPhp,
   formatSqm,
   getPropertyPermalink,
+  shouldDisplayLotDimensions,
 } from '../utils/format';
 import {formatEditorialParagraphs} from '../utils/dossierLayout';
 import {buildPropertyGallerySlides, resolveNextGalleryIndex} from '../utils/gallery';
@@ -483,100 +484,106 @@ export function PropertyDetailPage() {
             </header>
 
             {/* Hairline Architectural Specifications Ledger */}
-            <section aria-labelledby="specs-heading">
-              <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
-                Technical Schedule
-              </p>
-              <h2 id="specs-heading" className="mt-1 font-editorial text-2xl font-semibold text-[#1C1B19]">
-                Land, Boundary &amp; Title Specifications
-              </h2>
-              <dl className="mt-4 grid grid-cols-1 sm:grid-cols-2 border-t border-l border-[#E2DDD3] bg-[#FAF8F4]">
-                <div className="p-4 border-r border-b border-[#E2DDD3]">
-                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
-                    Land Area
-                  </dt>
-                  <dd className="mt-1 text-sm font-mono font-semibold text-[#1C1B19] tabular-nums">
-                    {formatSqm(property.lotAreaSqm)}
-                  </dd>
-                </div>
-                <div className="p-4 border-r border-b border-[#E2DDD3]">
-                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
-                    Lot Dimensions
-                  </dt>
-                  <dd className="mt-1 text-sm font-mono font-semibold text-[#1C1B19] tabular-nums">
-                    {property.dimensions || 'Available upon survey review'}
-                  </dd>
-                </div>
-                <div className="p-4 border-r border-b border-[#E2DDD3]">
-                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
-                    Classification
-                  </dt>
-                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
-                    {property.classification}
-                  </dd>
-                </div>
-                <div className="p-4 border-r border-b border-[#E2DDD3]">
-                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
-                    Title Status
-                  </dt>
-                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
-                    {property.titleStatus || 'Available upon request'}
-                  </dd>
-                </div>
-                <div className="p-4 border-r border-b border-[#E2DDD3]">
-                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
-                    Tax Declaration Status
-                  </dt>
-                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
-                    {property.taxDeclarationStatus || 'Available upon request'}
-                  </dd>
-                </div>
-                <div className="p-4 border-r border-b border-[#E2DDD3]">
-                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
-                    Road Access
-                  </dt>
-                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
-                    {property.roadAccess || 'Subject to site verification'}
-                  </dd>
-                </div>
-                <div className="p-4 border-r border-b border-[#E2DDD3]">
-                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
-                    Terrain &amp; Elevation
-                  </dt>
-                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
-                    {property.terrain || 'Standard grade'}
-                  </dd>
-                </div>
-                <div className="p-4 border-r border-b border-[#E2DDD3]">
-                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
-                    Utilities
-                  </dt>
-                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
-                    {property.utilities || 'Power & water line accessible'}
-                  </dd>
-                </div>
-                {property.boundaryDescription && (
-                  <div className="p-4 border-r border-b border-[#E2DDD3] sm:col-span-2">
-                    <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
-                      Lot Boundaries
-                    </dt>
-                    <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
-                      {property.boundaryDescription}
-                    </dd>
-                  </div>
-                )}
-                {property.nearbyLandmarks && (
-                  <div className="p-4 border-r border-b border-[#E2DDD3] sm:col-span-2">
-                    <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
-                      Nearby Landmarks
-                    </dt>
-                    <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
-                      {property.nearbyLandmarks}
-                    </dd>
-                  </div>
-                )}
-              </dl>
-            </section>
+            {(() => {
+              const showDimensions = shouldDisplayLotDimensions(property);
+              const coreSpecs: Array<{
+                label: string;
+                value: string;
+                mono?: boolean;
+                fullWidth?: boolean;
+              }> = [
+                {
+                  label: 'Land Area',
+                  value: formatSqm(property.lotAreaSqm),
+                  mono: true,
+                },
+                ...(showDimensions
+                  ? [
+                      {
+                        label: 'Lot Dimensions',
+                        value: property.dimensions.trim(),
+                        mono: true,
+                      },
+                    ]
+                  : []),
+                {
+                  label: 'Classification',
+                  value: property.classification,
+                },
+                {
+                  label: 'Title Status',
+                  value: property.titleStatus || 'Available upon request',
+                },
+                {
+                  label: 'Tax Declaration Status',
+                  value: property.taxDeclarationStatus || 'Available upon request',
+                },
+                {
+                  label: 'Road Access',
+                  value: property.roadAccess || 'Subject to site verification',
+                },
+                {
+                  label: 'Terrain & Elevation',
+                  value: property.terrain || 'Standard grade',
+                },
+                {
+                  label: 'Utilities',
+                  value: property.utilities || 'Power & water line accessible',
+                },
+              ];
+
+              // Balance the 2-column grid so omitting Lot Dimensions leaves zero blank space
+              if (coreSpecs.length % 2 === 1 && coreSpecs.length > 0) {
+                coreSpecs[0] = {...coreSpecs[0], fullWidth: true};
+              }
+
+              if (property.boundaryDescription) {
+                coreSpecs.push({
+                  label: 'Lot Boundaries',
+                  value: property.boundaryDescription,
+                  fullWidth: true,
+                });
+              }
+              if (property.nearbyLandmarks) {
+                coreSpecs.push({
+                  label: 'Nearby Landmarks',
+                  value: property.nearbyLandmarks,
+                  fullWidth: true,
+                });
+              }
+
+              return (
+                <section aria-labelledby="specs-heading">
+                  <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
+                    Technical Schedule
+                  </p>
+                  <h2 id="specs-heading" className="mt-1 font-editorial text-2xl font-semibold text-[#1C1B19]">
+                    Land, Boundary &amp; Title Specifications
+                  </h2>
+                  <dl className="mt-4 grid grid-cols-1 sm:grid-cols-2 border-t border-l border-[#E2DDD3] bg-[#FAF8F4]">
+                    {coreSpecs.map((spec) => (
+                      <div
+                        key={spec.label}
+                        className={`p-4 border-r border-b border-[#E2DDD3] ${
+                          spec.fullWidth ? 'sm:col-span-2' : ''
+                        }`}
+                      >
+                        <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                          {spec.label}
+                        </dt>
+                        <dd
+                          className={`mt-1 text-sm text-[#1C1B19] ${
+                            spec.mono ? 'font-mono font-semibold tabular-nums' : 'font-medium'
+                          }`}
+                        >
+                          {spec.value}
+                        </dd>
+                      </div>
+                    ))}
+                  </dl>
+                </section>
+              );
+            })()}
 
             {/* Editorial Description & Distinguishing Highlights */}
             <section aria-labelledby="about-heading">
@@ -637,7 +644,11 @@ export function PropertyDetailPage() {
               </div>
 
               {videos.length === 0 ? (
-                <PropertyVideoPlayer url="" title={property.title} posterFallback={currentPhoto} />
+                <PropertyVideoPlayer
+                  url=""
+                  title={property.title}
+                  posterFallback={galleryImages[0]?.url || currentPhoto}
+                />
               ) : (
                 <div className="space-y-6 min-w-0 max-w-full">
                   {videos.map((vid) => {
@@ -662,7 +673,7 @@ export function PropertyDetailPage() {
                         <PropertyVideoPlayer
                           url={vid.url}
                           title={vid.title || property.title}
-                          posterFallback={currentPhoto}
+                          posterFallback={galleryImages[0]?.url || currentPhoto}
                         />
                       </div>
                     );

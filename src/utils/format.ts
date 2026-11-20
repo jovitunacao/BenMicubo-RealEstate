@@ -23,6 +23,15 @@ export function computeTotalPrice(lotAreaSqm: number, pricePerSqm: number): numb
   return Math.round(lotAreaSqm * pricePerSqm);
 }
 
+export function shouldDisplayLotDimensions(
+  property: Pick<Property, 'dimensions' | 'showLotDimensions'>
+): boolean {
+  if (property.showLotDimensions === false) {
+    return false;
+  }
+  return Boolean((property.dimensions || '').trim());
+}
+
 export function generateNextLotId(existingProperties: Pick<Property, 'lotId'>[]): string {
   let maxNumber = 0;
   for (const prop of existingProperties) {
