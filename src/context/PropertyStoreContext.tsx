@@ -239,12 +239,12 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
           throw new Error(errors[0]);
         }
       }
-      await propertyService.setVisibility(id, visibility);
+      const updated = await propertyService.setVisibility(id, visibility);
       const isArchived = visibility === 'Archived';
       setProperties((prev) =>
         prev.map((p) =>
           p.id === id
-            ? {
+            ? updated || {
                 ...p,
                 visibility,
                 isArchived,

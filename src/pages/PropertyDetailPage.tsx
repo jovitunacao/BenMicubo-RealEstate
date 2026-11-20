@@ -1,4 +1,4 @@
-import {useEffect, useState} from 'react';
+import {useEffect, useRef, useState} from 'react';
 import {Link, useParams, useSearchParams} from 'react-router-dom';
 import {
   ArrowLeft,
@@ -37,6 +37,8 @@ import {
   formatSqm,
   getPropertyPermalink,
 } from '../utils/format';
+import {buildPropertyGallerySlides, resolveNextGalleryIndex} from '../utils/gallery';
+import {formatLatLngDisplay, sanitizeGoogleMapsHref} from '../utils/googleMaps';
 import {parsePropertyVideoUrl} from '../utils/video';
 import {buildDistributableQrUrl} from '../utils/siteUrl';
 
@@ -57,6 +59,14 @@ export function PropertyDetailPage() {
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [docError, setDocError] = useState('');
+  const touchStartXRef = useRef<number | null>(null);
+
+  const isPreviewAllowed =
+    searchParams.get('preview') === '1' && (isAdminAuthorized || isDemoMode);
+  const publiclyVisible = property ? isPropertyPubliclyVisible(property) : false;
+  const galleryImages = property
+    ? buildPropertyGallerySlides(property, {isPreviewAllowed})
+    : [];
 
   useEffect(() => {
     setActivePhotoIndex(0);
@@ -64,6 +74,20 @@ export function PropertyDetailPage() {
     setDocError('');
     window.scrollTo({top: 0});
   }, [lotId]);
+
+  useEffect(() => {
+    if (!lightboxOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setLightboxOpen(false);
+      else if (e.key === 'ArrowLeft') {
+        setActivePhotoIndex((prev) => (prev <= 0 ? galleryImages.length - 1 : prev - 1));
+      } else if (e.key === 'ArrowRight') {
+        setActivePhotoIndex((prev) => (prev >= galleryImages.length - 1 ? 0 : prev + 1));
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [lightboxOpen, galleryImages.length]);
 
   if (isLoading) {
     return (
@@ -73,10 +97,6 @@ export function PropertyDetailPage() {
       </main>
     );
   }
-
-  const isPreviewAllowed =
-    searchParams.get('preview') === '1' && (isAdminAuthorized || isDemoMode);
-  const publiclyVisible = property ? isPropertyPubliclyVisible(property) : false;
 
   if (!property || (!publiclyVisible && !isPreviewAllowed)) {
     return (
@@ -105,22 +125,9 @@ export function PropertyDetailPage() {
     );
   }
 
-  const galleryImages =
-    property.images && property.images.length > 0
-      ? isPreviewAllowed
-        ? property.images
-        : property.images.filter((img) => img.isApprovedPublic)
-      : property.photos.map((url, idx) => ({
-          id: `fallback-${idx}`,
-          url,
-          caption: '',
-          isCover: idx === 0,
-          sortOrder: idx,
-          isApprovedPublic: true,
-          storageBucket: 'property-media-public' as const,
-        }));
-
-  const currentImage = galleryImages[activePhotoIndex] || galleryImages[0];
+  const safeActiveIndex =
+    galleryImages.length > 0 ? Math.min(activePhotoIndex, galleryImages.length - 1) : 0;
+  const currentImage = galleryImages[safeActiveIndex] || galleryImages[0];
   const currentPhoto = currentImage?.url || '';
   const pricePerSqm =
     property.pricePerSqm || computePricePerSqm(property.priceTotalPhp, property.lotAreaSqm);
@@ -153,11 +160,28 @@ export function PropertyDetailPage() {
   const publicDocuments = filterPublicDocuments(property.documents || []);
 
   const handlePrevPhoto = () => {
-    setActivePhotoIndex((prev) => (prev === 0 ? galleryImages.length - 1 : prev - 1));
+    setActivePhotoIndex((prev) => (prev <= 0 ? galleryImages.length - 1 : prev - 1));
   };
 
   const handleNextPhoto = () => {
-    setActivePhotoIndex((prev) => (prev === galleryImages.length - 1 ? 0 : prev + 1));
+    setActivePhotoIndex((prev) => (prev >= galleryImages.length - 1 ? 0 : prev + 1));
+  };
+
+  const handleGalleryTouchStart = (e: React.TouchEvent) => {
+    touchStartXRef.current = e.touches[0]?.clientX ?? null;
+  };
+
+  const handleGalleryTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartXRef.current === null || galleryImages.length <= 1) {
+      touchStartXRef.current = null;
+      return;
+    }
+    const endX = e.changedTouches[0]?.clientX;
+    if (typeof endX === 'number') {
+      const deltaX = endX - touchStartXRef.current;
+      setActivePhotoIndex((prev) => resolveNextGalleryIndex(prev, galleryImages.length, deltaX));
+    }
+    touchStartXRef.current = null;
   };
 
   const handleCopyPermalink = async () => {
@@ -269,14 +293,19 @@ export function PropertyDetailPage() {
       <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-6 sm:pt-8">
         {/* Photo Gallery */}
         <section aria-label="Property photos">
-          <div className="relative aspect-[16/10] sm:aspect-[16/9] w-full rounded-xl overflow-hidden border border-[#E6E6EF] bg-[#F8F8FC]">
+          <div
+            onTouchStart={handleGalleryTouchStart}
+            onTouchEnd={handleGalleryTouchEnd}
+            className="relative aspect-[16/10] sm:aspect-[16/9] w-full rounded-xl overflow-hidden border border-[#E6E6EF] bg-[#F8F8FC] touch-pan-y"
+          >
             <PropertyImage
               src={currentPhoto}
               alt={
                 currentImage?.caption ||
-                `${property.title} — photo ${activePhotoIndex + 1}`
+                `${property.title} — photo ${safeActiveIndex + 1}`
               }
               fallbackTitle={property.title}
+              loading="eager"
               className="w-full h-full object-cover"
             />
 
@@ -312,7 +341,7 @@ export function PropertyDetailPage() {
 
               <div className="flex items-center gap-2 shrink-0">
                 <span className="px-2.5 py-1 text-xs font-mono text-white bg-black/65 rounded">
-                  {activePhotoIndex + 1} / {galleryImages.length}
+                  {galleryImages.length > 0 ? `${safeActiveIndex + 1} / ${galleryImages.length}` : '0 / 0'}
                 </span>
                 <button
                   type="button"
@@ -335,14 +364,15 @@ export function PropertyDetailPage() {
                   onClick={() => setActivePhotoIndex(index)}
                   aria-label={`Select photo ${index + 1}`}
                   className={`relative w-24 h-16 rounded-lg overflow-hidden border shrink-0 cursor-pointer transition-opacity ${
-                    activePhotoIndex === index
+                    safeActiveIndex === index
                       ? 'border-[#6500B5] ring-2 ring-[#6500B5]/25 opacity-100'
                       : 'border-[#E6E6EF] opacity-70 hover:opacity-100'
                   }`}
                 >
                   <PropertyImage
-                    src={img.url}
+                    src={img.thumbUrl}
                     alt={img.caption || `${property.title} thumbnail ${index + 1}`}
+                    loading="lazy"
                     className="w-full h-full object-cover"
                   />
                 </button>
@@ -602,20 +632,30 @@ export function PropertyDetailPage() {
                     </p>
                     <p className="text-xs text-[#4B4D57] mt-0.5">{property.region}</p>
                     <p className="text-xs font-mono text-[#696B77] mt-1 tabular-nums">
-                      GPS: {property.latitude.toFixed(4)}° N, {property.longitude.toFixed(4)}° E
+                      GPS: {formatLatLngDisplay(property.latitude, property.longitude)}
                     </p>
                   </div>
                 </div>
 
-                <a
-                  href={property.googleMapsUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center justify-center gap-2 h-11 px-5 text-sm font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] transition-colors whitespace-nowrap shrink-0"
-                >
-                  <span>Open in Google Maps</span>
-                  <ExternalLink className="w-4 h-4" />
-                </a>
+                {sanitizeGoogleMapsHref(
+                  property.googleMapsUrl,
+                  property.latitude,
+                  property.longitude
+                ) && (
+                  <a
+                    href={sanitizeGoogleMapsHref(
+                      property.googleMapsUrl,
+                      property.latitude,
+                      property.longitude
+                    )}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="inline-flex items-center justify-center gap-2 h-11 px-5 text-sm font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] transition-colors whitespace-nowrap shrink-0"
+                  >
+                    <span>Open in Google Maps</span>
+                    <ExternalLink className="w-4 h-4" />
+                  </a>
+                )}
               </div>
             </section>
           </div>
@@ -771,7 +811,9 @@ export function PropertyDetailPage() {
           role="dialog"
           aria-modal="true"
           aria-label="Expanded property photo"
-          className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center p-4"
+          onTouchStart={handleGalleryTouchStart}
+          onTouchEnd={handleGalleryTouchEnd}
+          className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center p-4 touch-pan-y"
         >
           <button
             type="button"
@@ -786,6 +828,7 @@ export function PropertyDetailPage() {
             <PropertyImage
               src={currentPhoto}
               alt={currentImage?.caption || `${property.title} full view`}
+              loading="eager"
               className="max-h-[80vh] w-auto object-contain rounded-lg"
             />
           </div>
@@ -806,7 +849,7 @@ export function PropertyDetailPage() {
                 Previous
               </button>
               <span className="text-xs font-mono">
-                {activePhotoIndex + 1} / {galleryImages.length}
+                {safeActiveIndex + 1} / {galleryImages.length}
               </span>
               <button
                 type="button"

@@ -938,8 +938,8 @@ export function AdminDashboardPage() {
                               <p className="font-semibold text-[#202124]">{item.title}</p>
                               <p className="text-[11px] text-[#696B77]">
                                 {item.city}, {item.province} · {item.classification} ·{' '}
-                                {item.images.length} photos · {item.videos.length} videos ·{' '}
-                                {item.documents.length} docs
+                                {item.images.length} photos ·{' '}
+                                {item.videos.length} videos · {item.documents.length} docs
                               </p>
                             </td>
                             <td className="py-3 px-3 text-right font-mono tabular-nums whitespace-nowrap">
@@ -1116,7 +1116,8 @@ export function AdminDashboardPage() {
                         </h3>
                         <p className="text-xs text-[#4B4D57]">
                           {item.city}, {item.province} · {formatSqm(item.lotAreaSqm)} ·{' '}
-                          {formatPhp(item.priceTotalPhp)} · {item.images.length} photos ·{' '}
+                          {formatPhp(item.priceTotalPhp)} ·{' '}
+                          {item.images.length} photos ·{' '}
                           {item.documents.length} documents
                         </p>
                       </div>
@@ -1384,7 +1385,7 @@ export function AdminDashboardPage() {
                     Media Inventory by Listing
                   </h2>
                   <p className="text-xs text-[#696B77] mt-1">
-                    Unpublished assets stay in <code className="font-mono">property-media-private</code>; published photos move to <code className="font-mono">property-media-public</code>.
+                    All property photos and documents are managed securely in Supabase Storage (<code className="font-mono">property-media-private</code> for private/draft media and <code className="font-mono">property-media-public</code> for approved published assets).
                   </p>
                   <div className="mt-4 overflow-x-auto">
                     <table className="w-full text-left border-collapse text-xs">
@@ -1406,9 +1407,13 @@ export function AdminDashboardPage() {
                             </td>
                             <td className="py-2.5 px-3">{prop.visibility}</td>
                             <td className="py-2.5 px-3">
-                              <span className="inline-flex items-center gap-1">
+                              <span className="inline-flex items-center gap-1.5">
                                 <ImageIcon className="w-3.5 h-3.5 text-[#6500B5]" />
-                                {prop.images.length}
+                                <span>{prop.images.length}</span>
+                                <span className="text-[11px] text-[#696B77]">
+                                  ({prop.images.filter((i) => i.isApprovedPublic).length} public /{' '}
+                                  {prop.images.filter((i) => !i.isApprovedPublic).length} private)
+                                </span>
                               </span>
                             </td>
                             <td className="py-2.5 px-3">

@@ -1,4 +1,4 @@
-import {useState} from 'react';
+import {useEffect, useState} from 'react';
 import {MapPin} from 'lucide-react';
 
 interface PropertyImageProps {
@@ -6,6 +6,7 @@ interface PropertyImageProps {
   alt: string;
   className?: string;
   fallbackTitle?: string;
+  loading?: 'lazy' | 'eager';
 }
 
 export function PropertyImage({
@@ -13,8 +14,15 @@ export function PropertyImage({
   alt,
   className = 'w-full h-full object-cover',
   fallbackTitle,
+  loading = 'lazy',
 }: PropertyImageProps) {
   const [hasError, setHasError] = useState(false);
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+    setIsLoaded(false);
+  }, [src]);
 
   if (!src || hasError) {
     return (
@@ -29,19 +37,35 @@ export function PropertyImage({
         <p className="text-sm font-medium text-[#202124] max-w-[22ch] leading-snug">
           {fallbackTitle || alt}
         </p>
-        <p className="text-xs text-[#696B77] mt-1">Property visual preview</p>
+        <p className="text-xs text-[#696B77] mt-1">
+          {hasError ? 'Image temporarily unavailable' : 'Property visual preview'}
+        </p>
       </div>
     );
   }
 
   return (
-    <img
-      src={src}
-      alt={alt}
-      loading="lazy"
-      referrerPolicy="no-referrer"
-      onError={() => setHasError(true)}
-      className={className}
-    />
+    <div className="relative w-full h-full">
+      {!isLoaded && (
+        <div
+          aria-hidden="true"
+          className="absolute inset-0 bg-[#F3F1FA] animate-pulse"
+        />
+      )}
+      <img
+        src={src}
+        alt={alt}
+        loading={loading}
+        referrerPolicy="no-referrer"
+        onLoad={() => setIsLoaded(true)}
+        onError={() => {
+          setHasError(true);
+          setIsLoaded(true);
+        }}
+        className={`${className} transition-opacity duration-200 ${
+          isLoaded ? 'opacity-100' : 'opacity-0'
+        }`}
+      />
+    </div>
   );
 }

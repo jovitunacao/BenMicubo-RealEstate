@@ -86,7 +86,7 @@ export interface Property {
   additionalRemarks: string;
   description: string;
   highlights: string[];
-  photos: string[]; // Ordered cover-first convenience list for public gallery
+  photos: string[]; // Ordered Supabase gallery URLs (cover photo first)
   images: PropertyImageItem[];
   youtubeUrl: string;
   videos: PropertyVideoItem[];

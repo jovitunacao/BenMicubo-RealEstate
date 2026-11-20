@@ -1,4 +1,4 @@
-import React, {useMemo, useState} from 'react';
+import React, {useEffect, useMemo, useRef, useState} from 'react';
 import {Link} from 'react-router-dom';
 import {
   AlertTriangle,
@@ -6,14 +6,14 @@ import {
   ArrowDown,
   ArrowUp,
   CheckCircle2,
+  ExternalLink,
   Eye,
   FileText,
   GripVertical,
   HardDrive,
-  Image as ImageIcon,
   Lock,
+  MapPin,
   Play,
-  Plus,
   RefreshCw,
   Send,
   Star,
@@ -22,6 +22,7 @@ import {
   Video,
   X,
 } from 'lucide-react';
+import {isSupabaseConfigured} from '../lib/supabase';
 import type {
   DocumentCategory,
   DocumentVisibility,
@@ -44,17 +45,28 @@ import {
   generateNextLotId,
 } from '../utils/format';
 import {parsePropertyVideoUrl} from '../utils/video';
-import {optimizePropertyImage} from '../utils/imageProcessor';
+import {computeFileFingerprint, optimizePropertyImage} from '../utils/imageProcessor';
 import {
   getAuthorizedDocumentDownloadUrl,
   uploadOptimizedPropertyImage,
   uploadPropertyDocumentFile,
 } from '../services/storageService';
-import {validatePropertyForPublish} from '../services/propertyService';
+import {
+  sortImagesCoverFirst,
+  validatePropertyForPublish,
+} from '../services/propertyService';
 import {
   getEffectiveCanonicalSiteUrl,
   validateCanonicalSiteUrl,
 } from '../utils/siteUrl';
+import {
+  buildGoogleMapsEmbedUrl,
+  buildGoogleMapsPinUrl,
+  buildOpenStreetMapEmbedUrl,
+  formatLatLngDisplay,
+  parseGoogleMapsCoordinates,
+  validateCoordinateStrings,
+} from '../utils/googleMaps';
 import {PropertyImage} from './PropertyImage';
 import {StatusIndicator} from './StatusIndicator';
 import {PropertyVideoPlayer} from './PropertyVideoPlayer';
@@ -123,12 +135,41 @@ export function AdminPropertyEditor({
   const [completeLocation, setCompleteLocation] = useState(
     initialProperty?.completeLocation ?? ''
   );
-  const [latitude, setLatitude] = useState(String(initialProperty?.latitude ?? 14.1228));
-  const [longitude, setLongitude] = useState(String(initialProperty?.longitude ?? 120.9856));
-  const [googleMapsUrl, setGoogleMapsUrl] = useState(
-    initialProperty?.googleMapsUrl ??
-      'https://www.google.com/maps/search/?api=1&query=14.1228,120.9856'
+  const [latitude, setLatitude] = useState(() =>
+    initialProperty && Number.isFinite(initialProperty.latitude)
+      ? String(initialProperty.latitude)
+      : ''
   );
+  const [longitude, setLongitude] = useState(() =>
+    initialProperty && Number.isFinite(initialProperty.longitude)
+      ? String(initialProperty.longitude)
+      : ''
+  );
+  const [googleMapsUrl, setGoogleMapsUrl] = useState(
+    () => initialProperty?.googleMapsUrl ?? ''
+  );
+  const [gpsFeedback, setGpsFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const [mapPreviewProvider, setMapPreviewProvider] = useState<'google' | 'osm'>('google');
+
+  useEffect(() => {
+    if (!initialProperty) return;
+    setLatitude(
+      Number.isFinite(initialProperty.latitude) ? String(initialProperty.latitude) : ''
+    );
+    setLongitude(
+      Number.isFinite(initialProperty.longitude) ? String(initialProperty.longitude) : ''
+    );
+    setGoogleMapsUrl(initialProperty.googleMapsUrl ?? '');
+    setGpsFeedback(null);
+  }, [
+    initialProperty?.id,
+    initialProperty?.latitude,
+    initialProperty?.longitude,
+    initialProperty?.googleMapsUrl,
+  ]);
 
   const [lotAreaSqm, setLotAreaSqm] = useState(String(initialProperty?.lotAreaSqm ?? 500));
   const [pricePerSqm, setPricePerSqm] = useState(
@@ -173,31 +214,34 @@ export function AdminPropertyEditor({
     initialProperty?.highlights.join('\n') ?? ''
   );
 
-  // Media: Photos
-  const [images, setImages] = useState<PropertyImageItem[]>(() => {
-    if (initialProperty?.images && initialProperty.images.length > 0) {
-      return initialProperty.images;
-    }
-    return [
-      {
-        id: `img-init-${Date.now()}`,
-        url: '/images/laguna_estate.svg',
-        caption: 'Primary aerial site perspective',
-        isCover: true,
-        sortOrder: 0,
-        isApprovedPublic: false,
-        storageBucket: 'property-media-private',
-      },
-    ];
-  });
-  const [dragImageIndex, setDragImageIndex] = useState<number | null>(null);
+  // Media: Property Photo Gallery — Supabase Storage (Cover first + Gallery)
+  const [images, setImages] = useState<PropertyImageItem[]>(() =>
+    initialProperty?.images ? sortImagesCoverFirst(initialProperty.images) : []
+  );
   const [explicitlyLockedImageIds, setExplicitlyLockedImageIds] = useState<Set<string>>(
     () => new Set()
   );
-  const [newPhotoUrl, setNewPhotoUrl] = useState('');
   const [uploadingPhoto, setUploadingPhoto] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{
+    current: number;
+    total: number;
+    percent: number;
+    stage: string;
+  } | null>(null);
   const [photoFeedback, setPhotoFeedback] = useState('');
-  const [previewPhoto, setPreviewPhoto] = useState<PropertyImageItem | null>(null);
+  const [photoUploadErrors, setPhotoUploadErrors] = useState<string[]>([]);
+  const [isPhotoDragOver, setIsPhotoDragOver] = useState(false);
+  const [dragImageIndex, setDragImageIndex] = useState<number | null>(null);
+  const [imageOptimizationStats, setImageOptimizationStats] = useState<
+    Record<
+      string,
+      {originalBytes: number; optimizedBytes: number; width: number; height: number; mimeType: string}
+    >
+  >({});
+  const imageFingerprintsRef = useRef<Map<string, string>>(new Map());
+  const imageContentHashesRef = useRef<Map<string, string>>(new Map());
+
+  const [previewPhoto, setPreviewPhoto] = useState<{url: string; caption: string} | null>(null);
 
   // Media: Multiple Videos
   const [videos, setVideos] = useState<PropertyVideoItem[]>(() => {
@@ -272,30 +316,19 @@ export function AdminPropertyEditor({
     const isComingFromUnpublished =
       Boolean(initialProperty) && initialProperty?.visibility !== 'Published';
 
-    // Preserve actual current storageBucket on each image so prepareImagesForVisibility
-    // accurately promotes private->public or demotes+deletes public->private on save.
-    const orderedImages = [...images]
-      .sort((a, b) => {
-        if (a.isCover !== b.isCover) return a.isCover ? -1 : 1;
-        return a.sortOrder - b.sortOrder;
-      })
-      .map((img, idx) => {
-        const approvedForPublic =
-          targetVisibility === 'Published'
-            ? img.isApprovedPublic ||
-              (isComingFromUnpublished && !explicitlyLockedImageIds.has(img.id))
-            : false;
-        return {
-          ...img,
-          sortOrder: idx,
-          isCover: idx === 0 || img.isCover,
-          isApprovedPublic: approvedForPublic,
-        };
-      });
-
-    if (orderedImages.length > 0 && !orderedImages.some((img) => img.isCover)) {
-      orderedImages[0].isCover = true;
-    }
+    const orderedImages = sortImagesCoverFirst(images).map((img, idx) => {
+      const approvedForPublic =
+        targetVisibility === 'Published'
+          ? img.isApprovedPublic ||
+            (isComingFromUnpublished && !explicitlyLockedImageIds.has(img.id))
+          : false;
+      return {
+        ...img,
+        sortOrder: idx,
+        isCover: idx === 0,
+        isApprovedPublic: approvedForPublic,
+      };
+    });
 
     const normalizedVideos = videos.map((v, idx) => ({
       ...v,
@@ -305,6 +338,16 @@ export function AdminPropertyEditor({
     const resolvedCompleteLocation =
       completeLocation.trim() ||
       [barangay.trim(), city.trim(), province.trim()].filter(Boolean).join(', ');
+    const coordCheck = validateCoordinateStrings(latitude, longitude);
+    const resolvedLat =
+      coordCheck.valid && coordCheck.latitude !== undefined ? coordCheck.latitude : Number.NaN;
+    const resolvedLng =
+      coordCheck.valid && coordCheck.longitude !== undefined ? coordCheck.longitude : Number.NaN;
+    const resolvedMapsUrl =
+      googleMapsUrl.trim() ||
+      (coordCheck.valid && coordCheck.latitude !== undefined && coordCheck.longitude !== undefined
+        ? buildGoogleMapsPinUrl(coordCheck.latitude, coordCheck.longitude)
+        : '');
 
     return {
       lotId: normalizedLotId,
@@ -338,19 +381,14 @@ export function AdminPropertyEditor({
         .split('\n')
         .map((s) => s.trim())
         .filter(Boolean),
-      photos:
-        orderedImages.length > 0
-          ? orderedImages.map((img) => img.url)
-          : ['/images/survey_plan.svg'],
+      photos: orderedImages.map((img) => img.url),
       images: orderedImages,
       youtubeUrl: normalizedVideos[0]?.url || '',
       videos: normalizedVideos,
       documents,
-      latitude: Number(latitude) || 14.5995,
-      longitude: Number(longitude) || 120.9842,
-      googleMapsUrl:
-        googleMapsUrl.trim() ||
-        `https://www.google.com/maps/search/?api=1&query=${latitude},${longitude}`,
+      latitude: resolvedLat,
+      longitude: resolvedLng,
+      googleMapsUrl: resolvedMapsUrl,
       agentName: agentName.trim() || siteSettings.defaultAgentName,
       agentPhone: agentPhone.trim() || siteSettings.defaultAgentPhone,
       agentWhatsapp: agentWhatsapp.trim() || siteSettings.defaultAgentWhatsapp,
@@ -362,104 +400,215 @@ export function AdminPropertyEditor({
     };
   };
 
-  const handleMultiPhotoUpload = async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
+  const handleGalleryUpload = async (fileList: FileList | File[] | null | undefined) => {
+    if (!fileList || fileList.length === 0) return;
+    const files = Array.from(fileList);
     setUploadingPhoto(true);
     setPhotoFeedback('');
+    setPhotoUploadErrors([]);
     setError('');
-    try {
-      const targetLot = (isEditing && initialProperty ? initialProperty.lotId : lotId) || 'LOT-NEW';
-      const approvedPublicIntent = visibility === 'Published';
-      const uploadedItems: PropertyImageItem[] = [];
-      let totalSavedKb = 0;
 
-      for (const file of Array.from(files)) {
-        const optimized = await optimizePropertyImage(file);
-        totalSavedKb += Math.max(
-          0,
-          Math.round((optimized.originalBytes - optimized.optimizedBytes) / 1024)
-        );
-        // Always stage new uploads in private Storage until property is saved & published
-        const uploaded = await uploadOptimizedPropertyImage(
-          targetLot,
-          optimized.blob,
-          optimized.fileName,
-          optimized.mimeType,
-          approvedPublicIntent,
-          optimized.dataUrl,
-          false
-        );
-        uploadedItems.push({
-          id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
-          url: uploaded.url,
-          caption: '',
-          isCover: images.length === 0 && uploadedItems.length === 0,
-          sortOrder: images.length + uploadedItems.length,
-          isApprovedPublic: approvedPublicIntent,
-          storageBucket: uploaded.storageBucket,
-          storagePath: uploaded.storagePath,
+    const targetLot = (isEditing && initialProperty ? initialProperty.lotId : lotId) || 'LOT-NEW';
+    const approvedPublicIntent = visibility === 'Published';
+    const errors: string[] = [];
+    const addedImages: PropertyImageItem[] = [];
+    let skippedDuplicates = 0;
+
+    try {
+      for (let idx = 0; idx < files.length; idx++) {
+        const file = files[idx];
+        const fingerprint = computeFileFingerprint(file);
+        if (Array.from(imageFingerprintsRef.current.values()).includes(fingerprint)) {
+          skippedDuplicates += 1;
+          continue;
+        }
+
+        setUploadProgress({
+          current: idx + 1,
+          total: files.length,
+          percent: 10,
+          stage: `Optimizing ${file.name}...`,
         });
+
+        try {
+          const optimized = await optimizePropertyImage(file);
+          if (Array.from(imageContentHashesRef.current.values()).includes(optimized.contentHash)) {
+            skippedDuplicates += 1;
+            continue;
+          }
+
+          // Always stage new uploads in private Storage until property is saved & published
+          const uploaded = await uploadOptimizedPropertyImage(
+            targetLot,
+            optimized.blob,
+            optimized.fileName,
+            optimized.mimeType,
+            approvedPublicIntent,
+            optimized.dataUrl,
+            false,
+            (percent, stage) => {
+              setUploadProgress({
+                current: idx + 1,
+                total: files.length,
+                percent,
+                stage: `${file.name}: ${stage}`,
+              });
+            }
+          );
+
+          const newId = `img-${Date.now()}-${idx}-${Math.random().toString(36).slice(2, 7)}`;
+          imageFingerprintsRef.current.set(newId, fingerprint);
+          imageContentHashesRef.current.set(newId, optimized.contentHash);
+          setImageOptimizationStats((prev) => ({
+            ...prev,
+            [newId]: {
+              originalBytes: optimized.originalBytes,
+              optimizedBytes: optimized.optimizedBytes,
+              width: optimized.width,
+              height: optimized.height,
+              mimeType: optimized.mimeType,
+            },
+          }));
+
+          addedImages.push({
+            id: newId,
+            url: uploaded.url,
+            caption: '',
+            isCover: false,
+            sortOrder: images.length + addedImages.length,
+            isApprovedPublic: approvedPublicIntent,
+            storageBucket: uploaded.storageBucket,
+            storagePath: uploaded.storagePath,
+          });
+        } catch (err) {
+          errors.push(
+            `${file.name}: ${err instanceof Error ? err.message : 'Unable to upload photo.'}`
+          );
+        }
       }
 
-      setImages((prev) => [...prev, ...uploadedItems]);
-      setPhotoFeedback(
-        `Optimized & staged ${uploadedItems.length} photo(s) in private storage (~${totalSavedKb} KB reduced).`
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unable to upload selected images.');
+      if (addedImages.length > 0) {
+        setImages((prev) => sortImagesCoverFirst([...prev, ...addedImages]));
+      }
+
+      const feedbackParts: string[] = [];
+      if (addedImages.length > 0) {
+        feedbackParts.push(
+          `Optimized & staged ${addedImages.length} photo(s) in private storage. Save listing to sync.`
+        );
+      }
+      if (skippedDuplicates > 0) {
+        feedbackParts.push(`Skipped ${skippedDuplicates} duplicate image(s).`);
+      }
+      if (feedbackParts.length > 0) {
+        setPhotoFeedback(feedbackParts.join(' '));
+      }
+      if (errors.length > 0) {
+        setPhotoUploadErrors(errors);
+      }
     } finally {
       setUploadingPhoto(false);
+      setUploadProgress(null);
     }
   };
 
-  const handleReplacePhoto = async (index: number, file: File | undefined) => {
+  const handleReplaceSinglePhoto = async (targetId: string, file: File | undefined) => {
     if (!file) return;
+    const targetImg = images.find((i) => i.id === targetId);
+    if (!targetImg) return;
+
     setUploadingPhoto(true);
+    setPhotoFeedback('');
+    setPhotoUploadErrors([]);
     setError('');
     try {
       const targetLot = (isEditing && initialProperty ? initialProperty.lotId : lotId) || 'LOT-NEW';
-      const existing = images[index];
+      const approvedIntent = targetImg.isApprovedPublic;
+      setUploadProgress({
+        current: 1,
+        total: 1,
+        percent: 15,
+        stage: `Optimizing replacement ${file.name}...`,
+      });
       const optimized = await optimizePropertyImage(file);
       const uploaded = await uploadOptimizedPropertyImage(
         targetLot,
         optimized.blob,
         optimized.fileName,
         optimized.mimeType,
-        existing.isApprovedPublic,
+        approvedIntent,
         optimized.dataUrl,
-        false
+        false,
+        (percent, stage) => {
+          setUploadProgress({
+            current: 1,
+            total: 1,
+            percent,
+            stage: `${file.name}: ${stage}`,
+          });
+        }
       );
+
+      imageFingerprintsRef.current.set(targetId, computeFileFingerprint(file));
+      imageContentHashesRef.current.set(targetId, optimized.contentHash);
+      setImageOptimizationStats((prev) => ({
+        ...prev,
+        [targetId]: {
+          originalBytes: optimized.originalBytes,
+          optimizedBytes: optimized.optimizedBytes,
+          width: optimized.width,
+          height: optimized.height,
+          mimeType: optimized.mimeType,
+        },
+      }));
+
       setImages((prev) =>
-        prev.map((item, idx) =>
-          idx === index
-            ? {
-                ...item,
-                url: uploaded.url,
-                storageBucket: uploaded.storageBucket,
-                storagePath: uploaded.storagePath,
-              }
-            : item
+        sortImagesCoverFirst(
+          prev.map((item) =>
+            item.id === targetId
+              ? {
+                  ...item,
+                  url: uploaded.url,
+                  storageBucket: uploaded.storageBucket,
+                  storagePath: uploaded.storagePath,
+                  isApprovedPublic: approvedIntent,
+                }
+              : item
+          )
         )
       );
-      setPhotoFeedback(`Replaced image ${index + 1} (${optimized.width}×${optimized.height}px). Save to sync Storage.`);
+      setPhotoFeedback(
+        `Replaced photo (${optimized.width}×${optimized.height}px, ${formatFileSize(
+          optimized.optimizedBytes
+        )}) and staged in private storage. Save listing to sync.`
+      );
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Failed to replace photo.');
+      setPhotoUploadErrors([
+        err instanceof Error ? err.message : 'Unable to replace property photo.',
+      ]);
     } finally {
       setUploadingPhoto(false);
+      setUploadProgress(null);
     }
   };
 
-  const handleSetCover = (index: number) => {
+  const handleSetCoverPhoto = (targetId: string) => {
     setImages((prev) => {
-      const target = prev[index];
+      const target = prev.find((i) => i.id === targetId);
       if (!target) return prev;
-      const reordered = [target, ...prev.filter((_, i) => i !== index)];
-      return reordered.map((item, idx) => ({
-        ...item,
-        isCover: idx === 0,
-        sortOrder: idx,
-      }));
+      const others = prev.filter((i) => i.id !== targetId);
+      return [
+        {...target, isCover: true, sortOrder: 0},
+        ...others.map((item, idx) => ({...item, isCover: false, sortOrder: idx + 1})),
+      ];
     });
+  };
+
+  const handleRemoveImage = (targetId: string) => {
+    imageFingerprintsRef.current.delete(targetId);
+    imageContentHashesRef.current.delete(targetId);
+    setImages((prev) => sortImagesCoverFirst(prev.filter((item) => item.id !== targetId)));
+    setPhotoFeedback('Photo removed from editor. Save listing to clean up storage.');
   };
 
   const handleMoveImage = (index: number, direction: -1 | 1) => {
@@ -485,25 +634,6 @@ export function AdminPropertyEditor({
       return copy.map((img, i) => ({...img, isCover: i === 0, sortOrder: i}));
     });
     setDragImageIndex(null);
-  };
-
-  const handleAddPhotoUrl = () => {
-    const trimmed = newPhotoUrl.trim();
-    if (!trimmed) return;
-    setImages((prev) => [
-      ...prev,
-      {
-        id: `img-${Date.now()}`,
-        url: trimmed,
-        caption: '',
-        isCover: prev.length === 0,
-        sortOrder: prev.length,
-        isApprovedPublic: visibility === 'Published',
-        storageBucket:
-          visibility === 'Published' ? 'property-media-public' : 'property-media-private',
-      },
-    ]);
-    setNewPhotoUrl('');
   };
 
   const [previewVideoId, setPreviewVideoId] = useState<string | null>(null);
@@ -597,12 +727,38 @@ export function AdminPropertyEditor({
     }
   };
 
-  const handleSyncMapsUrl = () => {
-    const lat = Number(latitude);
-    const lng = Number(longitude);
-    if (!Number.isNaN(lat) && !Number.isNaN(lng)) {
-      setGoogleMapsUrl(`https://www.google.com/maps/search/?api=1&query=${lat},${lng}`);
+  const handleManualCoordinateChange = (nextLat: string, nextLng: string) => {
+    setLatitude(nextLat);
+    setLongitude(nextLng);
+    const check = validateCoordinateStrings(nextLat, nextLng);
+    if (check.valid && check.latitude !== undefined && check.longitude !== undefined) {
+      const trimmedUrl = googleMapsUrl.trim();
+      const isAutoPinUrl =
+        !trimmedUrl ||
+        /^https:\/\/www\.google\.com\/maps\/search\/\?api=1&query=[^&]+$/i.test(trimmedUrl);
+      if (isAutoPinUrl) {
+        setGoogleMapsUrl(buildGoogleMapsPinUrl(check.latitude, check.longitude));
+      }
+      setGpsFeedback(null);
     }
+  };
+
+  const handleSyncMapsUrl = () => {
+    const parsed = parseGoogleMapsCoordinates(googleMapsUrl);
+    if (!parsed.ok || parsed.latitude === undefined || parsed.longitude === undefined) {
+      setGpsFeedback({
+        type: 'error',
+        message: parsed.message,
+      });
+      return;
+    }
+
+    setLatitude(String(parsed.latitude));
+    setLongitude(String(parsed.longitude));
+    setGpsFeedback({
+      type: 'success',
+      message: parsed.message,
+    });
   };
 
   const submitWithVisibility = async (targetVisibility: PropertyVisibility) => {
@@ -618,6 +774,14 @@ export function AdminPropertyEditor({
     }
     if (effectiveTotalPrice < 0) {
       setError('Total selling price cannot be negative.');
+      return;
+    }
+    const coordCheck = validateCoordinateStrings(latitude, longitude);
+    if (!coordCheck.valid) {
+      setError(
+        coordCheck.error ||
+          'Enter valid GPS coordinates (Latitude -90 to 90, Longitude -180 to 180) or sync a Google Maps pin before saving.'
+      );
       return;
     }
     for (const vid of videos) {
@@ -651,6 +815,22 @@ export function AdminPropertyEditor({
   };
 
   const previewData = buildPropertyInput(visibility);
+  const manualCoordCheck = validateCoordinateStrings(latitude, longitude);
+  const hasAnyCoordInput = Boolean(latitude.trim() || longitude.trim());
+  const activePreviewPinUrl =
+    manualCoordCheck.valid &&
+    manualCoordCheck.latitude !== undefined &&
+    manualCoordCheck.longitude !== undefined
+      ? buildGoogleMapsPinUrl(manualCoordCheck.latitude, manualCoordCheck.longitude)
+      : '';
+  const activePreviewEmbedUrl =
+    manualCoordCheck.valid &&
+    manualCoordCheck.latitude !== undefined &&
+    manualCoordCheck.longitude !== undefined
+      ? mapPreviewProvider === 'osm'
+        ? buildOpenStreetMapEmbedUrl(manualCoordCheck.latitude, manualCoordCheck.longitude)
+        : buildGoogleMapsEmbedUrl(manualCoordCheck.latitude, manualCoordCheck.longitude)
+      : '';
 
   return (
     <div className="space-y-6">
@@ -862,42 +1042,163 @@ export function AdminPropertyEditor({
 
         <div className="grid grid-cols-1 sm:grid-cols-12 gap-4 items-end">
           <div className="sm:col-span-3">
-            <label className="block text-xs font-medium text-[#4B4D57] mb-1">Latitude</label>
+            <label className="block text-xs font-medium text-[#4B4D57] mb-1">
+              Latitude (-90 to 90) *
+            </label>
             <input
               type="number"
               step="any"
               value={latitude}
-              onChange={(e) => setLatitude(e.target.value)}
-              className="w-full h-10 px-3 font-mono text-sm border border-[#D6D6E4] rounded-lg focus:outline-none focus:border-[#6500B5]"
+              onChange={(e) => handleManualCoordinateChange(e.target.value, longitude)}
+              placeholder="e.g., 14.1228"
+              aria-label="Latitude"
+              className={`w-full h-10 px-3 font-mono text-sm border rounded-lg focus:outline-none ${
+                hasAnyCoordInput && !manualCoordCheck.valid
+                  ? 'border-red-300 focus:border-red-500'
+                  : 'border-[#D6D6E4] focus:border-[#6500B5]'
+              }`}
             />
           </div>
           <div className="sm:col-span-3">
-            <label className="block text-xs font-medium text-[#4B4D57] mb-1">Longitude</label>
+            <label className="block text-xs font-medium text-[#4B4D57] mb-1">
+              Longitude (-180 to 180) *
+            </label>
             <input
               type="number"
               step="any"
               value={longitude}
-              onChange={(e) => setLongitude(e.target.value)}
-              className="w-full h-10 px-3 font-mono text-sm border border-[#D6D6E4] rounded-lg focus:outline-none focus:border-[#6500B5]"
+              onChange={(e) => handleManualCoordinateChange(latitude, e.target.value)}
+              placeholder="e.g., 120.9856"
+              aria-label="Longitude"
+              className={`w-full h-10 px-3 font-mono text-sm border rounded-lg focus:outline-none ${
+                hasAnyCoordInput && !manualCoordCheck.valid
+                  ? 'border-red-300 focus:border-red-500'
+                  : 'border-[#D6D6E4] focus:border-[#6500B5]'
+              }`}
             />
           </div>
-          <div className="sm:col-span-6 flex gap-2">
-            <input
-              type="url"
-              value={googleMapsUrl}
-              onChange={(e) => setGoogleMapsUrl(e.target.value)}
-              placeholder="https://www.google.com/maps/..."
-              aria-label="Google Maps URL"
-              className="flex-1 h-10 px-3 text-xs border border-[#D6D6E4] rounded-lg focus:outline-none focus:border-[#6500B5]"
-            />
-            <button
-              type="button"
-              onClick={handleSyncMapsUrl}
-              className="h-10 px-3 text-xs font-medium text-[#202124] bg-[#F8F8FC] border border-[#D6D6E4] rounded-lg hover:bg-[#EFEFF7] whitespace-nowrap cursor-pointer"
-            >
-              Sync GPS Pin
-            </button>
+          <div className="sm:col-span-6">
+            <label className="block text-xs font-medium text-[#4B4D57] mb-1">
+              Google Maps Link (paste full URL &amp; click Sync GPS Pin)
+            </label>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={googleMapsUrl}
+                onChange={(e) => {
+                  setGoogleMapsUrl(e.target.value);
+                  if (gpsFeedback) setGpsFeedback(null);
+                }}
+                placeholder="https://www.google.com/maps/place/.../@14.1228,120.9856,17z"
+                aria-label="Google Maps URL"
+                className="flex-1 h-10 px-3 text-xs border border-[#D6D6E4] rounded-lg focus:outline-none focus:border-[#6500B5]"
+              />
+              <button
+                type="button"
+                onClick={handleSyncMapsUrl}
+                className="h-10 px-3 text-xs font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] whitespace-nowrap cursor-pointer"
+              >
+                Sync GPS Pin
+              </button>
+            </div>
           </div>
+        </div>
+
+        {hasAnyCoordInput && !manualCoordCheck.valid && manualCoordCheck.error && (
+          <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-center gap-2">
+            <AlertTriangle className="w-3.5 h-3.5 shrink-0" />
+            <span>{manualCoordCheck.error}</span>
+          </p>
+        )}
+
+        {gpsFeedback && (
+          <div
+            role="status"
+            className={`text-xs rounded-lg px-3.5 py-2.5 border flex items-start gap-2 ${
+              gpsFeedback.type === 'success'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                : 'bg-red-50 border-red-200 text-red-900'
+            }`}
+          >
+            {gpsFeedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" />
+            )}
+            <span>{gpsFeedback.message}</span>
+          </div>
+        )}
+
+        {/* Map Marker Preview */}
+        <div className="rounded-xl border border-[#E6E6EF] bg-[#F8F8FC] overflow-hidden">
+          <div className="px-4 py-2.5 bg-white border-b border-[#E6E6EF] flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs">
+              <MapPin className="w-4 h-4 text-[#6500B5] shrink-0" />
+              <span className="font-semibold text-[#202124]">Map Marker Preview</span>
+              {manualCoordCheck.valid &&
+                manualCoordCheck.latitude !== undefined &&
+                manualCoordCheck.longitude !== undefined && (
+                  <span className="font-mono text-[11px] text-[#10169C] bg-[#F3EEFA] px-2 py-0.5 rounded tabular-nums">
+                    {formatLatLngDisplay(manualCoordCheck.latitude, manualCoordCheck.longitude)}
+                  </span>
+                )}
+            </div>
+
+            {manualCoordCheck.valid && activePreviewPinUrl && (
+              <div className="flex items-center gap-2">
+                <div className="inline-flex rounded-md border border-[#D6D6E4] bg-white overflow-hidden text-[11px]">
+                  <button
+                    type="button"
+                    onClick={() => setMapPreviewProvider('google')}
+                    className={`px-2.5 py-1 font-medium cursor-pointer ${
+                      mapPreviewProvider === 'google'
+                        ? 'bg-[#6500B5] text-white'
+                        : 'text-[#4B4D57] hover:bg-[#F8F8FC]'
+                    }`}
+                  >
+                    Google Pin
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMapPreviewProvider('osm')}
+                    className={`px-2.5 py-1 font-medium cursor-pointer ${
+                      mapPreviewProvider === 'osm'
+                        ? 'bg-[#6500B5] text-white'
+                        : 'text-[#4B4D57] hover:bg-[#F8F8FC]'
+                    }`}
+                  >
+                    Street Map
+                  </button>
+                </div>
+                <a
+                  href={activePreviewPinUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-[11px] font-medium text-[#6500B5] hover:underline whitespace-nowrap"
+                >
+                  <span>Verify in Google Maps</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              </div>
+            )}
+          </div>
+
+          {activePreviewEmbedUrl ? (
+            <div className="relative h-56 w-full bg-[#EFEFF7]">
+              <iframe
+                key={activePreviewEmbedUrl}
+                src={activePreviewEmbedUrl}
+                title={`Map marker preview at ${manualCoordCheck.latitude}, ${manualCoordCheck.longitude}`}
+                loading="lazy"
+                referrerPolicy="no-referrer-when-downgrade"
+                className="w-full h-full border-0"
+              />
+            </div>
+          ) : (
+            <div className="px-4 py-6 text-center text-xs text-[#696B77]">
+              Paste a full Google Maps URL and click <strong>Sync GPS Pin</strong>, or enter valid Latitude and Longitude manually to preview the exact site marker.
+            </div>
+          )}
         </div>
       </section>
 
@@ -1132,27 +1433,29 @@ export function AdminPropertyEditor({
         </div>
       </section>
 
-      {/* Section 4: Photo Gallery Management */}
-      <section className="p-5 rounded-xl border border-[#E6E6EF] bg-white space-y-4">
+      {/* Section 4: Property Photo Gallery (Supabase Storage) */}
+      <section className="p-5 rounded-xl border border-[#E6E6EF] bg-white space-y-5">
         <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-[#EFEFF6]">
           <div>
             <h3 className="font-display text-sm font-bold text-[#202124]">
-              4. Photo Gallery ({images.length}) · Auto-Optimized Web Display
+              4. Property Photo Gallery ({images.length}) · Supabase Storage
             </h3>
             <p className="text-xs text-[#696B77] mt-0.5">
-              Drag cards to reorder. Unpublished photos use private admin storage; approved photos move to public bucket upon Publish.
+              Upload one or more photos (auto-compressed WebP, max 1920px). Uploads stage securely in{' '}
+              <code className="font-mono">property-media-private</code> and promote to{' '}
+              <code className="font-mono">property-media-public</code> only when approved and published.
             </p>
           </div>
-          <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] cursor-pointer">
+          <label className="inline-flex items-center gap-2 px-3.5 py-2 text-xs font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] cursor-pointer shrink-0">
             <Upload className="w-3.5 h-3.5" />
-            <span>{uploadingPhoto ? 'Optimizing...' : 'Upload JPG / PNG / WebP'}</span>
+            <span>{uploadingPhoto ? 'Uploading...' : 'Upload Photos'}</span>
             <input
               type="file"
-              accept="image/jpeg,image/png,image/webp"
               multiple
+              accept="image/jpeg,image/png,image/webp"
               disabled={uploadingPhoto}
               onChange={(e) => {
-                void handleMultiPhotoUpload(e.target.files);
+                void handleGalleryUpload(e.target.files);
                 e.target.value = '';
               }}
               className="hidden"
@@ -1160,206 +1463,277 @@ export function AdminPropertyEditor({
           </label>
         </div>
 
+        {/* Drag-and-Drop Multi-Photo Upload Zone */}
+        <div
+          onDragOver={(e) => {
+            e.preventDefault();
+            setIsPhotoDragOver(true);
+          }}
+          onDragLeave={() => setIsPhotoDragOver(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setIsPhotoDragOver(false);
+            if (!uploadingPhoto && e.dataTransfer.files?.length) {
+              void handleGalleryUpload(e.dataTransfer.files);
+            }
+          }}
+          className={`p-4 rounded-xl border border-dashed text-center transition-colors ${
+            isPhotoDragOver
+              ? 'border-[#6500B5] bg-[#F3EEFA]'
+              : 'border-[#C5B3E6] bg-[#F8F8FC]'
+          }`}
+        >
+          <p className="text-xs text-[#4B4D57]">
+            Drag and drop JPG, PNG, or WebP property photos here, or click{' '}
+            <strong className="text-[#6500B5]">Upload Photos</strong> above. Photo #1 is always your designated Cover Photo.
+          </p>
+
+          {!isSupabaseConfigured && (
+            <div className="flex flex-wrap items-center justify-center gap-1.5 text-[11px] text-[#696B77] pt-2.5">
+              <span>Demo preview samples:</span>
+              {SAMPLE_IMAGE_CHOICES.slice(0, 4).map((sample) => (
+                <button
+                  key={sample.path}
+                  type="button"
+                  onClick={() => {
+                    setImages((prev) =>
+                      sortImagesCoverFirst([
+                        ...prev,
+                        {
+                          id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                          url: sample.path,
+                          caption: sample.label,
+                          isCover: prev.length === 0,
+                          sortOrder: prev.length,
+                          isApprovedPublic: visibility === 'Published',
+                          storageBucket:
+                            visibility === 'Published'
+                              ? 'property-media-public'
+                              : 'property-media-private',
+                        },
+                      ])
+                    );
+                  }}
+                  className="px-2 py-0.5 bg-white border border-[#E6E6EF] rounded text-[#4B4D57] hover:text-[#6500B5] cursor-pointer"
+                >
+                  + {sample.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {uploadProgress && (
+          <div className="p-3 rounded-lg border border-[#DCD0F0] bg-[#F3EEFA] space-y-1.5">
+            <div className="flex items-center justify-between text-xs text-[#311A4D]">
+              <span className="font-medium truncate">
+                Photo {uploadProgress.current} of {uploadProgress.total} · {uploadProgress.stage}
+              </span>
+              <span className="font-mono font-semibold shrink-0">{uploadProgress.percent}%</span>
+            </div>
+            <div className="h-1.5 w-full rounded-full bg-white overflow-hidden">
+              <div
+                className="h-full bg-[#6500B5] transition-all duration-150"
+                style={{width: `${uploadProgress.percent}%`}}
+              />
+            </div>
+          </div>
+        )}
+
         {photoFeedback && (
           <p className="text-xs text-[#6500B5] bg-[#F3EEFA] border border-[#DCD0F0] rounded-lg px-3 py-2">
             {photoFeedback}
           </p>
         )}
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          {images.map((img, index) => (
-            <div
-              key={img.id}
-              draggable
-              onDragStart={() => setDragImageIndex(index)}
-              onDragOver={(e) => e.preventDefault()}
-              onDrop={() => handleDropImage(index)}
-              className={`p-3 rounded-xl border bg-[#F8F8FC] flex gap-3 items-start transition-colors ${
-                dragImageIndex === index ? 'border-[#6500B5] bg-[#F3EEFA]' : 'border-[#E6E6EF]'
-              }`}
-            >
-              <div className="pt-1 text-[#696B77] cursor-grab" title="Drag to reorder">
-                <GripVertical className="w-4 h-4" />
-              </div>
+        {photoUploadErrors.length > 0 && (
+          <div className="p-3 rounded-lg border border-red-200 bg-red-50 text-xs text-red-800 space-y-1">
+            {photoUploadErrors.map((msg, i) => (
+              <p key={i} className="flex items-start gap-2">
+                <AlertTriangle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" />
+                <span>{msg}</span>
+              </p>
+            ))}
+          </div>
+        )}
 
-              <button
-                type="button"
-                onClick={() => setPreviewPhoto(img)}
-                title="Preview full image"
-                className="relative w-24 h-20 rounded-lg overflow-hidden border border-[#D6D6E4] bg-white shrink-0 cursor-pointer"
-              >
-                <PropertyImage
-                  src={img.url}
-                  alt={img.caption || `Property photo ${index + 1}`}
-                  className="w-full h-full object-cover"
-                />
-                {img.isCover && (
-                  <span className="absolute top-1 left-1 px-1.5 py-0.5 text-[10px] font-semibold bg-[#6500B5] text-white rounded">
-                    Cover
-                  </span>
-                )}
-              </button>
+        {images.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+            {images.map((img, index) => {
+              const stats = imageOptimizationStats[img.id];
+              const isCover = index === 0 || img.isCover;
+              return (
+                <div
+                  key={img.id}
+                  draggable
+                  onDragStart={() => setDragImageIndex(index)}
+                  onDragOver={(e) => e.preventDefault()}
+                  onDrop={() => handleDropImage(index)}
+                  className={`p-3 rounded-xl border bg-[#F8F8FC] flex gap-3 items-start transition-colors ${
+                    dragImageIndex === index
+                      ? 'border-[#6500B5] bg-[#F3EEFA]'
+                      : isCover
+                        ? 'border-[#6500B5]/50'
+                        : 'border-[#E6E6EF]'
+                  }`}
+                >
+                  <div className="pt-1 text-[#696B77] cursor-grab" title="Drag to reorder">
+                    <GripVertical className="w-4 h-4" />
+                  </div>
 
-              <div className="flex-1 min-w-0 space-y-2">
-                <input
-                  type="text"
-                  value={img.caption}
-                  onChange={(e) => {
-                    const val = e.target.value;
-                    setImages((prev) =>
-                      prev.map((item, idx) => (idx === index ? {...item, caption: val} : item))
-                    );
-                  }}
-                  placeholder="Photo caption (e.g., 25m concrete road frontage)..."
-                  className="w-full h-8 px-2.5 text-xs bg-white border border-[#D6D6E4] rounded focus:outline-none focus:border-[#6500B5]"
-                />
-
-                <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextApproved = !img.isApprovedPublic;
-                      setExplicitlyLockedImageIds((prev) => {
-                        const next = new Set(prev);
-                        if (nextApproved) next.delete(img.id);
-                        else next.add(img.id);
-                        return next;
-                      });
-                      setImages((prev) =>
-                        prev.map((item, idx) =>
-                          idx === index ? {...item, isApprovedPublic: nextApproved} : item
-                        )
-                      );
-                    }}
-                    className={`inline-flex items-center gap-1 px-2 py-1 border rounded cursor-pointer ${
-                      img.isApprovedPublic
-                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
-                        : 'bg-amber-50 border-amber-200 text-amber-900'
-                    }`}
-                  >
-                    {img.isApprovedPublic ? (
-                      <>
-                        <Eye className="w-3 h-3" />
-                        <span>Public</span>
-                      </>
-                    ) : (
-                      <>
-                        <Lock className="w-3 h-3" />
-                        <span>Private</span>
-                      </>
-                    )}
-                  </button>
-
-                  {!img.isCover && (
-                    <button
-                      type="button"
-                      onClick={() => handleSetCover(index)}
-                      className="inline-flex items-center gap-1 px-2 py-1 bg-white border border-[#D6D6E4] rounded hover:border-[#6500B5] hover:text-[#6500B5] cursor-pointer"
-                    >
-                      <Star className="w-3 h-3" />
-                      <span>Set Cover</span>
-                    </button>
-                  )}
-
-                  <label className="inline-flex items-center gap-1 px-2 py-1 bg-white border border-[#D6D6E4] rounded hover:border-[#6500B5] hover:text-[#6500B5] cursor-pointer">
-                    <RefreshCw className="w-3 h-3" />
-                    <span>Replace</span>
-                    <input
-                      type="file"
-                      accept="image/jpeg,image/png,image/webp"
-                      onChange={(e) => {
-                        void handleReplacePhoto(index, e.target.files?.[0]);
-                        e.target.value = '';
-                      }}
-                      className="hidden"
-                    />
-                  </label>
-
-                  <button
-                    type="button"
-                    disabled={index === 0}
-                    onClick={() => handleMoveImage(index, -1)}
-                    aria-label="Move photo up"
-                    className="w-6 h-6 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center disabled:opacity-40 cursor-pointer"
-                  >
-                    <ArrowUp className="w-3 h-3" />
-                  </button>
-                  <button
-                    type="button"
-                    disabled={index === images.length - 1}
-                    onClick={() => handleMoveImage(index, 1)}
-                    aria-label="Move photo down"
-                    className="w-6 h-6 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center disabled:opacity-40 cursor-pointer"
-                  >
-                    <ArrowDown className="w-3 h-3" />
-                  </button>
                   <button
                     type="button"
                     onClick={() =>
-                      setImages((prev) =>
-                        prev
-                          .filter((_, idx) => idx !== index)
-                          .map((it, i) => ({...it, isCover: i === 0, sortOrder: i}))
-                      )
+                      setPreviewPhoto({
+                        url: img.url,
+                        caption: img.caption || (isCover ? 'Cover Photo' : `Gallery Photo #${index + 1}`),
+                      })
                     }
-                    aria-label="Delete photo"
-                    className="w-6 h-6 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center text-red-700 hover:bg-red-50 cursor-pointer"
+                    title="Preview photo"
+                    className="relative w-28 h-22 rounded-lg overflow-hidden border border-[#D6D6E4] bg-white shrink-0 cursor-pointer"
                   >
-                    <Trash2 className="w-3 h-3" />
+                    <PropertyImage
+                      src={img.url}
+                      alt={img.caption || `Property photo ${index + 1}`}
+                      className="w-full h-full object-cover"
+                    />
+                    <span
+                      className={`absolute top-1 left-1 px-1.5 py-0.5 text-[10px] font-semibold rounded text-white ${
+                        isCover ? 'bg-[#6500B5]' : 'bg-[#10169C]'
+                      }`}
+                    >
+                      {isCover ? 'Cover #1' : `#${index + 1}`}
+                    </span>
                   </button>
+
+                  <div className="flex-1 min-w-0 space-y-2">
+                    <input
+                      type="text"
+                      value={img.caption}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setImages((prev) =>
+                          prev.map((item) => (item.id === img.id ? {...item, caption: val} : item))
+                        );
+                      }}
+                      placeholder="Photo caption (e.g., Road frontage view)..."
+                      className="w-full h-8 px-2.5 text-xs bg-white border border-[#D6D6E4] rounded focus:outline-none focus:border-[#6500B5]"
+                    />
+
+                    {stats ? (
+                      <p className="text-[11px] font-mono text-[#4B4D57] truncate">
+                        {formatFileSize(stats.originalBytes)} → {formatFileSize(stats.optimizedBytes)} ({stats.width}×{stats.height}px)
+                      </p>
+                    ) : (
+                      <p className="text-[11px] font-mono text-[#696B77] truncate">
+                        {img.storageBucket}
+                      </p>
+                    )}
+
+                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const nextApproved = !img.isApprovedPublic;
+                          setExplicitlyLockedImageIds((prev) => {
+                            const next = new Set(prev);
+                            if (nextApproved) next.delete(img.id);
+                            else next.add(img.id);
+                            return next;
+                          });
+                          setImages((prev) =>
+                            prev.map((item) =>
+                              item.id === img.id
+                                ? {...item, isApprovedPublic: nextApproved}
+                                : item
+                            )
+                          );
+                        }}
+                        className={`inline-flex items-center gap-1 px-2 py-1 border rounded cursor-pointer ${
+                          img.isApprovedPublic
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                            : 'bg-amber-50 border-amber-200 text-amber-900'
+                        }`}
+                      >
+                        {img.isApprovedPublic ? (
+                          <>
+                            <Eye className="w-3 h-3" />
+                            <span>Public</span>
+                          </>
+                        ) : (
+                          <>
+                            <Lock className="w-3 h-3" />
+                            <span>Private</span>
+                          </>
+                        )}
+                      </button>
+
+                      {!isCover && (
+                        <button
+                          type="button"
+                          onClick={() => handleSetCoverPhoto(img.id)}
+                          className="inline-flex items-center gap-1 px-2 py-1 bg-white border border-[#D6D6E4] rounded text-[#6500B5] hover:bg-[#F3EEFA] cursor-pointer"
+                        >
+                          <Star className="w-3 h-3" />
+                          <span>Set Cover</span>
+                        </button>
+                      )}
+
+                      <label className="inline-flex items-center gap-1 px-2 py-1 bg-white border border-[#D6D6E4] rounded hover:border-[#6500B5] hover:text-[#6500B5] cursor-pointer">
+                        <RefreshCw className="w-3 h-3" />
+                        <span>Replace</span>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          disabled={uploadingPhoto}
+                          onChange={(e) => {
+                            void handleReplaceSinglePhoto(img.id, e.target.files?.[0]);
+                            e.target.value = '';
+                          }}
+                          className="hidden"
+                        />
+                      </label>
+
+                      <button
+                        type="button"
+                        disabled={index === 0}
+                        onClick={() => handleMoveImage(index, -1)}
+                        aria-label="Move photo up"
+                        className="w-6 h-6 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                      >
+                        <ArrowUp className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={index === images.length - 1}
+                        onClick={() => handleMoveImage(index, 1)}
+                        aria-label="Move photo down"
+                        className="w-6 h-6 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                      >
+                        <ArrowDown className="w-3 h-3" />
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveImage(img.id)}
+                        aria-label="Remove photo"
+                        className="w-6 h-6 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center text-red-700 hover:bg-red-50 cursor-pointer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
-          ))}
-        </div>
+              );
+            })}
+          </div>
+        )}
 
-        <div className="flex gap-2">
-          <input
-            type="url"
-            value={newPhotoUrl}
-            onChange={(e) => setNewPhotoUrl(e.target.value)}
-            placeholder="Paste HTTPS image URL..."
-            className="flex-1 h-9 px-3 text-xs border border-[#D6D6E4] rounded-md focus:outline-none focus:border-[#6500B5]"
-          />
-          <button
-            type="button"
-            onClick={handleAddPhotoUrl}
-            className="inline-flex items-center gap-1 px-3 h-9 text-xs font-medium text-[#202124] bg-[#F8F8FC] border border-[#D6D6E4] rounded-md hover:border-[#6500B5] cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5 text-[#6500B5]" />
-            <span>Add URL</span>
-          </button>
-        </div>
-
-        <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-[#696B77]">
-          <span>Sample architectural visuals:</span>
-          {SAMPLE_IMAGE_CHOICES.map((sample) => (
-            <button
-              key={sample.path}
-              type="button"
-              onClick={() =>
-                setImages((prev) => [
-                  ...prev,
-                  {
-                    id: `img-${Date.now()}-${Math.random().toString(36).slice(2, 5)}`,
-                    url: sample.path,
-                    caption: sample.label,
-                    isCover: prev.length === 0,
-                    sortOrder: prev.length,
-                    isApprovedPublic: visibility === 'Published',
-                    storageBucket:
-                      visibility === 'Published'
-                        ? 'property-media-public'
-                        : 'property-media-private',
-                  },
-                ])
-              }
-              className="px-2 py-0.5 bg-[#F8F8FC] border border-[#E6E6EF] rounded text-[#4B4D57] hover:text-[#6500B5] cursor-pointer"
-            >
-              + {sample.label}
-            </button>
-          ))}
-        </div>
+        {images.length === 0 && (
+          <p className="text-xs text-[#696B77] text-center py-2">
+            No property photos uploaded yet. Upload at least one approved photo before publishing.
+          </p>
+        )}
       </section>
 
       {/* Section 5: Multiple Property Videos (YouTube & Google Drive) */}
@@ -1939,12 +2313,19 @@ export function AdminPropertyEditor({
                 </div>
               )}
 
-              <div className="text-xs text-[#696B77]">
-                Public buyer documents shown on live page:{' '}
-                <strong>{previewData.documents.filter((d) => d.visibility === 'Public').length}</strong>{' '}
-                (Private admin-only docs:{' '}
-                <strong>{previewData.documents.filter((d) => d.visibility === 'Private').length}</strong>
-                )
+              <div className="text-xs text-[#696B77] space-y-1">
+                <p>
+                  Gallery photos: <strong>{previewData.images.filter((i) => i.isApprovedPublic).length}</strong>{' '}
+                  approved public photo(s) ·{' '}
+                  <strong>{previewData.images.filter((i) => !i.isApprovedPublic).length}</strong> private-only photo(s).
+                </p>
+                <p>
+                  Public buyer documents shown on live page:{' '}
+                  <strong>{previewData.documents.filter((d) => d.visibility === 'Public').length}</strong>{' '}
+                  (Private admin-only docs:{' '}
+                  <strong>{previewData.documents.filter((d) => d.visibility === 'Private').length}</strong>
+                  )
+                </p>
               </div>
             </div>
           </div>

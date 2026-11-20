@@ -23,17 +23,19 @@ const ALLOWED_PRIVATE_DOC_MIMES = new Set([
   'image/webp',
 ]);
 
+export type StorageBucketName = typeof PRIVATE_MEDIA_BUCKET | typeof PUBLIC_MEDIA_BUCKET;
+
 export function resolveImageUploadBucket(
   isApprovedPublic: boolean,
   isPropertyPublished: boolean
-): 'property-media-private' | 'property-media-public' {
+): StorageBucketName {
   return isApprovedPublic && isPropertyPublished ? PUBLIC_MEDIA_BUCKET : PRIVATE_MEDIA_BUCKET;
 }
 
 export function resolveDocumentUploadBucket(
   visibility: 'Private' | 'Public',
   isPropertyPublished: boolean
-): 'property-media-private' | 'property-media-public' {
+): StorageBucketName {
   return visibility === 'Public' && isPropertyPublished
     ? PUBLIC_MEDIA_BUCKET
     : PRIVATE_MEDIA_BUCKET;
@@ -61,6 +63,15 @@ export function validateDocumentFile(
   }
 }
 
+function makeUniqueStorageSuffix(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+}
+
+function isNotFoundStorageError(message: string | undefined): boolean {
+  if (!message) return false;
+  return /\b(not found|object not found|no such|404|does not exist)\b/i.test(message);
+}
+
 export async function uploadOptimizedPropertyImage(
   lotId: string,
   blob: Blob,
@@ -68,12 +79,14 @@ export async function uploadOptimizedPropertyImage(
   mimeType: string,
   isApprovedPublic: boolean,
   fallbackDataUrl: string,
-  isPropertyPublished = false
+  isPropertyPublished = false,
+  onProgress?: (percent: number, stage: string) => void
 ): Promise<{
   url: string;
-  storageBucket: 'property-media-private' | 'property-media-public';
+  storageBucket: StorageBucketName;
   storagePath: string;
 }> {
+  onProgress?.(15, 'Validating optimized image...');
   if (!ALLOWED_IMAGE_MIMES.has(mimeType)) {
     throw new Error('Only JPG, PNG, and WebP images are supported.');
   }
@@ -83,26 +96,34 @@ export async function uploadOptimizedPropertyImage(
 
   // Unapproved images or uploads on unpublished/staged listings NEVER go to public Storage
   const bucket = resolveImageUploadBucket(isApprovedPublic, isPropertyPublished);
-  const storagePath = `${lotId.toUpperCase()}/images/${Date.now()}-${fileName}`;
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '-');
+  const storagePath = `${lotId.trim().toUpperCase()}/images/${makeUniqueStorageSuffix()}-${safeName}`;
 
   if (isSupabaseConfigured && supabase) {
+    onProgress?.(50, 'Uploading to Supabase Storage...');
     const {error} = await supabase.storage
       .from(bucket)
       .upload(storagePath, blob, {contentType: mimeType, upsert: false});
-    if (error) throw new Error(`Image upload failed: ${error.message}`);
+    if (error) throw new Error(`Image upload failed (${bucket}/${storagePath}): ${error.message}`);
 
+    onProgress?.(85, 'Generating secure URL...');
     if (bucket === PUBLIC_MEDIA_BUCKET) {
       const {data} = supabase.storage.from(bucket).getPublicUrl(storagePath);
+      onProgress?.(100, 'Upload complete.');
       return {url: data.publicUrl, storageBucket: bucket, storagePath};
     }
 
     const {data: signed, error: signError} = await supabase.storage
       .from(bucket)
       .createSignedUrl(storagePath, 3600);
-    if (signError) throw new Error(signError.message);
+    if (signError) {
+      throw new Error(`Image uploaded to ${bucket}, but signed URL failed: ${signError.message}`);
+    }
+    onProgress?.(100, 'Upload complete.');
     return {url: signed.signedUrl, storageBucket: bucket, storagePath};
   }
 
+  onProgress?.(100, 'Staged locally.');
   return {
     url: fallbackDataUrl,
     storageBucket: bucket,
@@ -110,18 +131,109 @@ export async function uploadOptimizedPropertyImage(
   };
 }
 
+function resolveClient(clientOverride?: typeof supabase): typeof supabase {
+  if (clientOverride !== undefined) return clientOverride;
+  return isSupabaseConfigured && supabase ? supabase : null;
+}
+
+export async function verifyObjectExistsInBucket(
+  bucket: StorageBucketName,
+  storagePath: string,
+  clientOverride?: typeof supabase
+): Promise<boolean> {
+  const client = resolveClient(clientOverride);
+  if (!client || !storagePath || storagePath.includes('..')) return false;
+
+  const {data: signed, error: signErr} = await client.storage
+    .from(bucket)
+    .createSignedUrl(storagePath, 60);
+  if (!signErr && signed?.signedUrl) {
+    return true;
+  }
+
+  const {data: dlBlob, error: dlErr} = await client.storage.from(bucket).download(storagePath);
+  return !dlErr && Boolean(dlBlob);
+}
+
+export async function ensurePrivateBackupFromPublicBucket(
+  storagePath: string,
+  fallbackContentType = 'application/octet-stream',
+  clientOverride?: typeof supabase
+): Promise<void> {
+  const client = resolveClient(clientOverride);
+  if (!client || !storagePath) return;
+  if (storagePath.includes('..')) {
+    throw new Error(`Invalid storage path "${storagePath}".`);
+  }
+
+  const {data: publicBlob, error: dlErr} = await client.storage
+    .from(PUBLIC_MEDIA_BUCKET)
+    .download(storagePath);
+
+  if (dlErr || !publicBlob) {
+    // Only tolerate missing public object if a verified private backup already exists
+    const privateExists = await verifyObjectExistsInBucket(
+      PRIVATE_MEDIA_BUCKET,
+      storagePath,
+      client
+    );
+    if (privateExists) {
+      return;
+    }
+    throw new Error(
+      `Failed to back up published file "${storagePath}" to private storage: ${
+        dlErr?.message || 'Source object unavailable.'
+      }`
+    );
+  }
+
+  const {error: backupErr} = await client.storage
+    .from(PRIVATE_MEDIA_BUCKET)
+    .upload(storagePath, publicBlob, {
+      contentType: publicBlob.type || fallbackContentType,
+      upsert: true,
+    });
+  if (backupErr) {
+    throw new Error(
+      `Failed to archive confidential file "${storagePath}" to private storage: ${backupErr.message}`
+    );
+  }
+
+  // Explicitly verify backup object exists in property-media-private before caller deletes public copy
+  const verified = await verifyObjectExistsInBucket(PRIVATE_MEDIA_BUCKET, storagePath, client);
+  if (!verified) {
+    throw new Error(
+      `Private backup verification failed for "${storagePath}". Public file was preserved to prevent data loss.`
+    );
+  }
+}
+
 export async function promoteFileToPublicBucket(
   storagePath: string,
-  fallbackContentType = 'application/octet-stream'
+  fallbackContentType = 'application/octet-stream',
+  clientOverride?: typeof supabase
 ): Promise<string | null> {
-  if (!isSupabaseConfigured || !supabase || !storagePath) return null;
+  const client = resolveClient(clientOverride);
+  if (!client || !storagePath || storagePath.includes('..')) return null;
 
-  const {data: fileBlob, error: downloadErr} = await supabase.storage
+  const {data: fileBlob, error: downloadErr} = await client.storage
     .from(PRIVATE_MEDIA_BUCKET)
     .download(storagePath);
-  if (downloadErr || !fileBlob) return null;
+  if (downloadErr || !fileBlob) {
+    // If file is already present in public bucket (e.g., retry after partial failure), reuse it safely
+    const alreadyPublic = await verifyObjectExistsInBucket(
+      PUBLIC_MEDIA_BUCKET,
+      storagePath,
+      client
+    );
+    if (alreadyPublic) {
+      const {data} = client.storage.from(PUBLIC_MEDIA_BUCKET).getPublicUrl(storagePath);
+      return data.publicUrl;
+    }
+    return null;
+  }
 
-  const {error: uploadErr} = await supabase.storage
+  const {error: uploadErr} = await client.storage
     .from(PUBLIC_MEDIA_BUCKET)
     .upload(storagePath, fileBlob, {
       contentType: fileBlob.type || fallbackContentType,
@@ -129,48 +241,40 @@ export async function promoteFileToPublicBucket(
     });
   if (uploadErr) return null;
 
-  const {data} = supabase.storage.from(PUBLIC_MEDIA_BUCKET).getPublicUrl(storagePath);
+  const {data} = client.storage.from(PUBLIC_MEDIA_BUCKET).getPublicUrl(storagePath);
   return data.publicUrl;
 }
 
 export async function promoteImageToPublicBucket(
-  storagePath: string
+  storagePath: string,
+  clientOverride?: typeof supabase
 ): Promise<string | null> {
-  return promoteFileToPublicBucket(storagePath, 'image/webp');
+  return promoteFileToPublicBucket(storagePath, 'image/webp', clientOverride);
 }
 
 export async function demoteFileFromPublicBucket(
   storagePath: string,
-  kind: 'image' | 'document'
+  kind: 'image' | 'document',
+  clientOverride?: typeof supabase
 ): Promise<{signedUrl: string | null}> {
-  if (!isSupabaseConfigured || !supabase || !storagePath) {
+  const client = resolveClient(clientOverride);
+  if (!client || !storagePath) {
     return {signedUrl: null};
   }
 
-  const {data: publicBlob, error: dlErr} = await supabase.storage
-    .from(PUBLIC_MEDIA_BUCKET)
-    .download(storagePath);
-  if (!dlErr && publicBlob) {
-    const {error: backupErr} = await supabase.storage
-      .from(PRIVATE_MEDIA_BUCKET)
-      .upload(storagePath, publicBlob, {
-        contentType: publicBlob.type || 'application/octet-stream',
-        upsert: true,
-      });
-    if (backupErr) {
-      throw new Error(`Failed to archive confidential file to private storage: ${backupErr.message}`);
-    }
-  }
+  await ensurePrivateBackupFromPublicBucket(storagePath, 'application/octet-stream', client);
 
-  const {error: removeErr} = await supabase.storage
+  const {error: removeErr} = await client.storage
     .from(PUBLIC_MEDIA_BUCKET)
     .remove([storagePath]);
-  if (removeErr) {
-    throw new Error(`Failed to remove confidential file from public storage: ${removeErr.message}`);
+  if (removeErr && !isNotFoundStorageError(removeErr.message)) {
+    throw new Error(
+      `Failed to remove confidential file "${storagePath}" from public storage: ${removeErr.message}`
+    );
   }
 
   if (kind === 'image') {
-    const {data: signed} = await supabase.storage
+    const {data: signed} = await client.storage
       .from(PRIVATE_MEDIA_BUCKET)
       .createSignedUrl(storagePath, 3600);
     return {signedUrl: signed?.signedUrl || null};
@@ -179,22 +283,47 @@ export async function demoteFileFromPublicBucket(
 }
 
 export async function removeStoragePathsFromBucket(
-  bucket: 'property-media-private' | 'property-media-public',
-  paths: string[]
+  bucket: StorageBucketName,
+  paths: string[],
+  clientOverride?: typeof supabase
 ): Promise<void> {
-  const cleanPaths = paths.filter((p) => Boolean(p && !p.includes('..')));
-  if (!isSupabaseConfigured || !supabase || cleanPaths.length === 0) return;
-  const {error} = await supabase.storage.from(bucket).remove(cleanPaths);
-  if (error) {
-    throw new Error(`Failed to remove storage files from ${bucket}: ${error.message}`);
+  const cleanPaths = Array.from(
+    new Set(paths.filter((p) => Boolean(p && !p.includes('..'))))
+  );
+  const client = resolveClient(clientOverride);
+  if (!client || cleanPaths.length === 0) return;
+
+  const {error} = await client.storage.from(bucket).remove(cleanPaths);
+  if (error && !isNotFoundStorageError(error.message)) {
+    throw new Error(
+      `Failed to remove ${cleanPaths.length} storage file(s) from ${bucket} (${cleanPaths.join(', ')}): ${error.message}`
+    );
+  }
+}
+
+export async function cleanupPromotedPublicObjects(
+  paths: string[],
+  clientOverride?: typeof supabase
+): Promise<void> {
+  const cleanPaths = Array.from(
+    new Set(paths.filter((p) => Boolean(p && !p.includes('..'))))
+  );
+  const client = resolveClient(clientOverride);
+  if (!client || cleanPaths.length === 0) return;
+  try {
+    await client.storage.from(PUBLIC_MEDIA_BUCKET).remove(cleanPaths);
+  } catch {
+    // Best-effort compensating rollback cleanup
   }
 }
 
 export async function refreshPrivateImageSignedUrl(
-  storagePath: string
+  storagePath: string,
+  clientOverride?: typeof supabase
 ): Promise<string | null> {
-  if (!isSupabaseConfigured || !supabase || !storagePath) return null;
-  const {data, error} = await supabase.storage
+  const client = resolveClient(clientOverride);
+  if (!client || !storagePath) return null;
+  const {data, error} = await client.storage
     .from(PRIVATE_MEDIA_BUCKET)
     .createSignedUrl(storagePath, 3600);
   if (error || !data) return null;
@@ -205,26 +334,30 @@ export async function uploadPropertyDocumentFile(
   lotId: string,
   file: File,
   visibility: 'Private' | 'Public',
-  isPropertyPublished = false
+  isPropertyPublished = false,
+  onProgress?: (percent: number, stage: string) => void
 ): Promise<{
-  storageBucket: 'property-media-private' | 'property-media-public';
+  storageBucket: StorageBucketName;
   storagePath: string;
   publicUrl?: string;
   dataUrl?: string;
 }> {
+  onProgress?.(15, 'Validating document...');
   validateDocumentFile(file, visibility);
 
   // Private documents and unpublished property documents NEVER upload to public Storage
   const bucket = resolveDocumentUploadBucket(visibility, isPropertyPublished);
   const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '-');
-  const storagePath = `${lotId.toUpperCase()}/documents/${Date.now()}-${safeName}`;
+  const storagePath = `${lotId.trim().toUpperCase()}/documents/${makeUniqueStorageSuffix()}-${safeName}`;
 
   if (isSupabaseConfigured && supabase) {
+    onProgress?.(55, 'Uploading document to Supabase Storage...');
     const {error} = await supabase.storage
       .from(bucket)
       .upload(storagePath, file, {contentType: file.type || 'application/octet-stream'});
-    if (error) throw new Error(`Document upload failed: ${error.message}`);
+    if (error) throw new Error(`Document upload failed (${bucket}/${storagePath}): ${error.message}`);
 
+    onProgress?.(100, 'Upload complete.');
     if (bucket === PUBLIC_MEDIA_BUCKET) {
       const {data} = supabase.storage.from(bucket).getPublicUrl(storagePath);
       return {storageBucket: bucket, storagePath, publicUrl: data.publicUrl};
@@ -242,6 +375,7 @@ export async function uploadPropertyDocumentFile(
     reader.readAsDataURL(file);
   });
 
+  onProgress?.(100, 'Staged locally.');
   return {
     storageBucket: bucket,
     storagePath,
