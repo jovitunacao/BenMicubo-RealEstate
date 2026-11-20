@@ -3,6 +3,7 @@
 @layer base {
   :root {
     --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+    --font-editorial: 'Cormorant Garamond', Georgia, 'Times New Roman', serif;
     --font-sans: 'DM Sans', system-ui, -apple-system, sans-serif;
     --font-mono: 'IBM Plex Mono', ui-monospace, SFMono-Regular, monospace;
     --brand-purple: #6500B5;
@@ -11,6 +12,12 @@
     --ink-primary: #202124;
     --surface-tint: #F8F8FC;
     --border-subtle: #E6E6EF;
+    --dossier-ivory: #FAF8F4;
+    --dossier-alabaster: #F4F0E8;
+    --dossier-charcoal: #1C1B19;
+    --dossier-stone: #6B665E;
+    --dossier-champagne: #B89B6A;
+    --dossier-hairline: #E2DDD3;
   }
 
   html {
@@ -24,6 +31,10 @@
     font-family: var(--font-display);
   }
 
+  .font-editorial {
+    font-family: var(--font-editorial);
+  }
+
   .font-mono {
     font-family: var(--font-mono);
   }
@@ -33,10 +44,34 @@
   font-variant-numeric: tabular-nums;
 }
 
+.dossier-sheet-root {
+  -webkit-font-smoothing: antialiased;
+}
+
+.dossier-a4-page {
+  width: 100%;
+  max-width: 210mm;
+  min-height: 297mm;
+  background-color: var(--dossier-ivory);
+  color: var(--dossier-charcoal);
+}
+
+@page {
+  size: A4 portrait;
+  margin: 12mm;
+}
+
+@page dossier-a4 {
+  size: A4 portrait;
+  margin: 10mm;
+}
+
 @media print {
   body {
     background: #FFFFFF !important;
-    color: #000000 !important;
+    color: #1C1B19 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
   .no-print {
     display: none !important;
@@ -44,8 +79,31 @@
   .print-only {
     display: block !important;
   }
-  @page {
-    size: A4 portrait;
-    margin: 12mm;
+  .dossier-sheet-root {
+    page: dossier-a4;
+    background: #FFFFFF !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+  .dossier-a4-page {
+    max-width: none !important;
+    width: 100% !important;
+    min-height: 274mm !important;
+    border: none !important;
+    box-shadow: none !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    break-after: page;
+    page-break-after: always;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+  .dossier-a4-page:last-child {
+    break-after: auto;
+    page-break-after: auto;
+  }
+  .dossier-avoid-break {
+    break-inside: avoid;
+    page-break-inside: avoid;
   }
 }

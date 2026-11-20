@@ -1007,6 +1007,15 @@ export function AdminDashboardPage() {
                                     <Eye className="w-3.5 h-3.5" />
                                   )}
                                 </Link>
+                                <Link
+                                  to={`/dossier/${encodeURIComponent(item.lotId)}${
+                                    item.visibility !== 'Published' ? '?preview=1' : ''
+                                  }`}
+                                  title="Open 5-Page A4 Dossier (PDF)"
+                                  className="w-8 h-8 rounded border border-[#E6E6EF] inline-flex items-center justify-center text-[#4B4D57] hover:text-[#1C1B19]"
+                                >
+                                  <FileText className="w-3.5 h-3.5" />
+                                </Link>
                                 {canonicalUrlValidation.valid ? (
                                   <Link
                                     to={`/signage/${encodeURIComponent(item.lotId)}`}
@@ -1130,6 +1139,13 @@ export function AdminDashboardPage() {
                           <Eye className="w-3.5 h-3.5 text-[#6500B5]" />
                           <span>Preview</span>
                         </Link>
+                        <Link
+                          to={`/dossier/${encodeURIComponent(item.lotId)}?preview=1`}
+                          className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-[#1C1B19] bg-[#FAF8F4] border border-[#E2DDD3] rounded-lg hover:border-[#B89B6A]"
+                        >
+                          <FileText className="w-3.5 h-3.5 text-[#8A6D3B]" />
+                          <span>Dossier PDF</span>
+                        </Link>
                         <button
                           type="button"
                           onClick={() => {
@@ -1206,6 +1222,13 @@ export function AdminDashboardPage() {
                         <span>Copy URL</span>
                       </button>
 
+                      <Link
+                        to={`/dossier/${encodeURIComponent(item.lotId)}`}
+                        className="inline-flex items-center gap-1.5 h-9 px-3 text-xs font-medium text-[#1C1B19] bg-[#FAF8F4] border border-[#E2DDD3] rounded-lg hover:border-[#B89B6A]"
+                      >
+                        <FileText className="w-3.5 h-3.5 text-[#8A6D3B]" />
+                        <span>Dossier PDF</span>
+                      </Link>
                       {canonicalUrlValidation.valid ? (
                         <Link
                           to={`/signage/${encodeURIComponent(item.lotId)}`}

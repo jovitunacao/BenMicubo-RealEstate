@@ -125,4 +125,6 @@ export interface SiteSettings {
   defaultAgentMessenger: string;
 }
 
-export type PropertyInput = Omit<Property, 'id' | 'updatedAt'>;
+export type PropertyInput = Omit<Property, 'id' | 'updatedAt'> & {
+  expectedUpdatedAt?: string;
+};

@@ -397,6 +397,7 @@ export function AdminPropertyEditor({
         targetVisibility === 'Published'
           ? initialProperty?.publishedAt || new Date().toISOString()
           : initialProperty?.publishedAt,
+      expectedUpdatedAt: initialProperty?.updatedAt,
     };
   };
 
@@ -2242,13 +2243,26 @@ export function AdminPropertyEditor({
                 <Eye className="w-4 h-4" />
                 <span>Pre-Publish Dossier Preview · {previewData.lotId}</span>
               </div>
-              <button
-                type="button"
-                onClick={() => setPreviewOpen(false)}
-                className="w-8 h-8 rounded bg-white border border-[#DCD0F0] flex items-center justify-center text-[#202124] cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-2">
+                {isEditing && initialProperty && (
+                  <Link
+                    to={`/dossier/${encodeURIComponent(initialProperty.lotId)}${
+                      initialProperty.visibility !== 'Published' ? '?preview=1' : ''
+                    }`}
+                    className="inline-flex items-center gap-1.5 h-8 px-3 text-xs font-medium text-white bg-[#1C1B19] rounded hover:bg-[#35322D] whitespace-nowrap"
+                  >
+                    <FileText className="w-3.5 h-3.5 text-[#B89B6A]" />
+                    <span>Open 5-Page A4 PDF</span>
+                  </Link>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setPreviewOpen(false)}
+                  className="w-8 h-8 rounded bg-white border border-[#DCD0F0] flex items-center justify-center text-[#202124] cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
             </div>
             <div className="p-6 overflow-y-auto space-y-6">
               {previewData.photos[0] && (

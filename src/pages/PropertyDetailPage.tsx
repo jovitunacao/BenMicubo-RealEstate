@@ -37,6 +37,7 @@ import {
   formatSqm,
   getPropertyPermalink,
 } from '../utils/format';
+import {formatEditorialParagraphs} from '../utils/dossierLayout';
 import {buildPropertyGallerySlides, resolveNextGalleryIndex} from '../utils/gallery';
 import {formatLatLngDisplay, sanitizeGoogleMapsHref} from '../utils/googleMaps';
 import {parsePropertyVideoUrl} from '../utils/video';
@@ -91,36 +92,40 @@ export function PropertyDetailPage() {
 
   if (isLoading) {
     return (
-      <main className="max-w-6xl mx-auto px-4 sm:px-6 py-12">
-        <div className="h-8 w-48 bg-[#F8F8FC] rounded animate-pulse mb-6" />
-        <div className="aspect-[16/9] w-full bg-[#F8F8FC] rounded-xl animate-pulse" />
+      <main className="min-h-[calc(100vh-64px)] bg-[#FAF8F4]">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-12">
+          <div className="h-8 w-48 bg-[#F4F0E8] border border-[#E2DDD3] animate-pulse mb-6" />
+          <div className="aspect-[16/9] w-full bg-[#F4F0E8] border border-[#E2DDD3] animate-pulse" />
+        </div>
       </main>
     );
   }
 
   if (!property || (!publiclyVisible && !isPreviewAllowed)) {
     return (
-      <main className="max-w-3xl mx-auto px-4 sm:px-6 py-20 text-center">
-        <p className="font-mono text-xs text-[#696B77]">
-          {property && !publiclyVisible ? 'Unpublished / Archived Listing' : '404 · Property Not Found'}
-        </p>
-        <h1 className="mt-2 font-display text-2xl font-bold text-[#202124]">
-          {property && !publiclyVisible
-            ? `${property.lotId} is currently ${property.visibility.toLowerCase()}`
-            : `No active listing found for ${decodeURIComponent(lotId).toUpperCase()}`}
-        </h1>
-        <p className="mt-2 text-sm text-[#4B4D57]">
-          {property && !publiclyVisible
-            ? 'This property is not publicly published right now. Only published BEN MICUBO REAL ESTATE SERVICES listings are open to buyers.'
-            : 'The lot identifier may have been archived or removed from this BEN MICUBO REAL ESTATE SERVICES directory.'}
-        </p>
-        <Link
-          to="/"
-          className="mt-6 inline-flex items-center gap-2 px-5 py-2.5 text-sm font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098]"
-        >
-          <ArrowLeft className="w-4 h-4" />
-          Back to All Properties
-        </Link>
+      <main className="min-h-[calc(100vh-64px)] bg-[#FAF8F4] py-20 px-4 sm:px-6 text-center">
+        <div className="max-w-2xl mx-auto">
+          <p className="font-mono text-xs uppercase tracking-[0.16em] text-[#8A6D3B]">
+            {property && !publiclyVisible ? 'Unpublished / Archived Listing' : '404 · Property Not Found'}
+          </p>
+          <h1 className="mt-2 font-editorial text-3xl sm:text-4xl font-semibold text-[#1C1B19]">
+            {property && !publiclyVisible
+              ? `${property.lotId} is currently ${property.visibility.toLowerCase()}`
+              : `No active listing found for ${decodeURIComponent(lotId).toUpperCase()}`}
+          </h1>
+          <p className="mt-3 text-sm text-[#6B665E] leading-relaxed">
+            {property && !publiclyVisible
+              ? 'This property is not publicly published right now. Only published BEN MICUBO REAL ESTATE SERVICES listings are open to buyers.'
+              : 'The lot identifier may have been archived or removed from this BEN MICUBO REAL ESTATE SERVICES directory.'}
+          </p>
+          <Link
+            to="/"
+            className="mt-6 inline-flex items-center gap-2 px-5 py-2.5 text-xs font-medium text-[#FAF8F4] bg-[#1C1B19] hover:bg-[#35322D]"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to All Properties</span>
+          </Link>
+        </div>
       </main>
     );
   }
@@ -140,6 +145,10 @@ export function PropertyDetailPage() {
       ? `${window.location.origin}/property/${encodeURIComponent(property.lotId)}`
       : permalink;
 
+  const dossierRoute = `/dossier/${encodeURIComponent(property.lotId)}${
+    !publiclyVisible && isPreviewAllowed ? '?preview=1' : ''
+  }`;
+
   const videos =
     property.videos && property.videos.length > 0
       ? property.videos
@@ -158,6 +167,7 @@ export function PropertyDetailPage() {
 
   // Strict privacy guard: NEVER display Private admin documents on public detail page
   const publicDocuments = filterPublicDocuments(property.documents || []);
+  const descriptionParagraphs = formatEditorialParagraphs(property.description || '');
 
   const handlePrevPhoto = () => {
     setActivePhotoIndex((prev) => (prev <= 0 ? galleryImages.length - 1 : prev - 1));
@@ -212,53 +222,64 @@ export function PropertyDetailPage() {
   };
 
   return (
-    <main className="bg-white pb-16">
+    <main className="bg-[#FAF8F4] text-[#1C1B19] pb-20">
       {/* Admin Preview Banner when previewing Draft / Archived */}
       {!publiclyVisible && isPreviewAllowed && (
-        <div className="bg-[#F3EEFA] border-b border-[#DCD0F0]">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-[#311A4D]">
+        <div className="bg-[#F4F0E8] border-b border-[#B89B6A]">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-[#1C1B19]">
             <div className="flex items-center gap-2 font-medium">
-              <Eye className="w-4 h-4 text-[#6500B5]" />
+              <Eye className="w-4 h-4 text-[#8A6D3B]" />
               <span>
                 Admin Preview Mode · This listing is <strong>{property.visibility}</strong> and is hidden from public buyers.
               </span>
             </div>
-            <Link to="/admin" className="font-semibold text-[#6500B5] hover:underline">
+            <Link to="/admin" className="font-semibold text-[#8A6D3B] hover:underline">
               Return to Admin Dashboard →
             </Link>
           </div>
         </div>
       )}
 
-      {/* Breadcrumb bar */}
-      <div className="border-b border-[#E6E6EF] bg-[#F8F8FC]">
-        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3 text-xs text-[#4B4D57]">
+      {/* Editorial Breadcrumb & Utility Bar */}
+      <div className="border-b border-[#E2DDD3] bg-[#F4F0E8]">
+        <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-3 text-xs text-[#6B665E]">
           <nav aria-label="Breadcrumb" className="flex items-center gap-2 min-w-0 truncate">
-            <Link to="/" className="hover:text-[#6500B5] inline-flex items-center gap-1 shrink-0">
+            <Link to="/" className="hover:text-[#1C1B19] inline-flex items-center gap-1.5 shrink-0">
               <ArrowLeft className="w-3.5 h-3.5" />
               <span>All Listings</span>
             </Link>
-            <span aria-hidden="true">/</span>
+            <span aria-hidden="true" className="text-[#B89B6A]">
+              ·
+            </span>
             <span className="truncate">{property.province}</span>
-            <span aria-hidden="true">/</span>
-            <span className="font-mono font-semibold text-[#10169C] shrink-0">
+            <span aria-hidden="true" className="text-[#B89B6A]">
+              ·
+            </span>
+            <span className="font-mono font-semibold text-[#1C1B19] shrink-0">
               {property.lotId}
             </span>
           </nav>
 
-          <div className="flex items-center gap-3 shrink-0">
+          <div className="flex flex-wrap items-center gap-3 shrink-0">
             <ShareListingButton
               lotId={property.lotId}
               title={property.title}
               shareUrl={shareUrl}
               messengerHandle={property.agentMessenger}
             />
+            <Link
+              to={dossierRoute}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#FAF8F4] bg-[#1C1B19] hover:bg-[#35322D] transition-colors whitespace-nowrap shrink-0"
+            >
+              <FileText className="w-3.5 h-3.5 text-[#B89B6A]" />
+              <span>5-Page A4 Dossier (PDF)</span>
+            </Link>
             {canonicalUrlValidation.valid ? (
               <Link
                 to={`/signage/${encodeURIComponent(property.lotId)}`}
-                className="inline-flex items-center gap-1.5 font-medium text-[#6500B5] hover:underline whitespace-nowrap shrink-0"
+                className="inline-flex items-center gap-1.5 font-medium text-[#1C1B19] hover:text-[#8A6D3B] whitespace-nowrap shrink-0"
               >
-                <Printer className="w-3.5 h-3.5" />
+                <Printer className="w-3.5 h-3.5 text-[#8A6D3B]" />
                 <span>Print QR Sign</span>
               </Link>
             ) : (
@@ -266,7 +287,7 @@ export function PropertyDetailPage() {
                 type="button"
                 disabled
                 title="Configure VITE_PUBLIC_SITE_URL or a public HTTPS domain in Settings to enable printable QR signage."
-                className="inline-flex items-center gap-1.5 font-medium text-[#696B77] opacity-60 cursor-not-allowed whitespace-nowrap shrink-0"
+                className="inline-flex items-center gap-1.5 font-medium text-[#6B665E] opacity-60 cursor-not-allowed whitespace-nowrap shrink-0"
               >
                 <Printer className="w-3.5 h-3.5" />
                 <span>Print Sign Disabled</span>
@@ -278,25 +299,25 @@ export function PropertyDetailPage() {
 
       {/* Prominent Sold Notice Banner — Permanent URL remains accessible */}
       {property.status === 'Sold' && (
-        <div className="bg-[#F8F8FC] border-b border-[#E6E6EF]">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#202124]">
+        <div className="bg-[#F4F0E8] border-b border-[#E2DDD3]">
+          <div className="max-w-6xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-2 text-xs text-[#1C1B19]">
             <p>
-              <strong>Property Status: SOLD.</strong> This parcel ({property.lotId}) has already been sold. You may still browse specifications below or inquire with BEN MICUBO REAL ESTATE SERVICES for similar nearby lots.
+              <strong>Property Status: SOLD.</strong> This parcel ({property.lotId}) has already been sold. You may still review specifications below or inquire with BEN MICUBO REAL ESTATE SERVICES for comparable lots.
             </p>
-            <Link to="/" className="font-semibold text-[#6500B5] hover:underline">
+            <Link to="/" className="font-semibold text-[#8A6D3B] hover:underline">
               Browse Available Lots →
             </Link>
           </div>
         </div>
       )}
 
-      <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-6 sm:pt-8">
-        {/* Photo Gallery */}
+      <div className="max-w-6xl mx-auto px-4 sm:px-6 pt-7 sm:pt-9">
+        {/* Curated Gallery Frame */}
         <section aria-label="Property photos">
           <div
             onTouchStart={handleGalleryTouchStart}
             onTouchEnd={handleGalleryTouchEnd}
-            className="relative aspect-[16/10] sm:aspect-[16/9] w-full rounded-xl overflow-hidden border border-[#E6E6EF] bg-[#F8F8FC] touch-pan-y"
+            className="relative aspect-[16/10] sm:aspect-[16/9] w-full overflow-hidden border border-[#E2DDD3] bg-[#F4F0E8] touch-pan-y"
           >
             <PropertyImage
               src={currentPhoto}
@@ -315,7 +336,7 @@ export function PropertyDetailPage() {
                   type="button"
                   onClick={handlePrevPhoto}
                   aria-label="Previous photo"
-                  className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/90 text-[#202124] border border-[#E6E6EF] flex items-center justify-center hover:bg-white transition-colors cursor-pointer"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 bg-[#FAF8F4]/92 text-[#1C1B19] border border-[#E2DDD3] flex items-center justify-center hover:bg-white transition-colors cursor-pointer"
                 >
                   <ChevronLeft className="w-5 h-5" />
                 </button>
@@ -323,7 +344,7 @@ export function PropertyDetailPage() {
                   type="button"
                   onClick={handleNextPhoto}
                   aria-label="Next photo"
-                  className="absolute right-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-white/90 text-[#202124] border border-[#E6E6EF] flex items-center justify-center hover:bg-white transition-colors cursor-pointer"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 w-11 h-11 bg-[#FAF8F4]/92 text-[#1C1B19] border border-[#E2DDD3] flex items-center justify-center hover:bg-white transition-colors cursor-pointer"
                 >
                   <ChevronRight className="w-5 h-5" />
                 </button>
@@ -332,7 +353,7 @@ export function PropertyDetailPage() {
 
             <div className="absolute bottom-3 left-3 right-3 flex items-end justify-between gap-3">
               {currentImage?.caption ? (
-                <p className="px-3 py-1.5 text-xs text-white bg-black/65 rounded max-w-xl">
+                <p className="px-3 py-1.5 text-xs text-[#FAF8F4] bg-[#1C1B19]/80 max-w-xl font-editorial italic tracking-wide">
                   {currentImage.caption}
                 </p>
               ) : (
@@ -340,14 +361,14 @@ export function PropertyDetailPage() {
               )}
 
               <div className="flex items-center gap-2 shrink-0">
-                <span className="px-2.5 py-1 text-xs font-mono text-white bg-black/65 rounded">
+                <span className="px-2.5 py-1 text-xs font-mono text-[#FAF8F4] bg-[#1C1B19]/80">
                   {galleryImages.length > 0 ? `${safeActiveIndex + 1} / ${galleryImages.length}` : '0 / 0'}
                 </span>
                 <button
                   type="button"
                   onClick={() => setLightboxOpen(true)}
                   aria-label="Expand photo gallery"
-                  className="w-9 h-9 rounded bg-black/65 text-white flex items-center justify-center hover:bg-black/80 transition-colors cursor-pointer"
+                  className="w-9 h-9 bg-[#1C1B19]/80 text-[#FAF8F4] flex items-center justify-center hover:bg-[#1C1B19] transition-colors cursor-pointer"
                 >
                   <Maximize2 className="w-4 h-4" />
                 </button>
@@ -363,10 +384,10 @@ export function PropertyDetailPage() {
                   type="button"
                   onClick={() => setActivePhotoIndex(index)}
                   aria-label={`Select photo ${index + 1}`}
-                  className={`relative w-24 h-16 rounded-lg overflow-hidden border shrink-0 cursor-pointer transition-opacity ${
+                  className={`relative w-24 h-16 overflow-hidden border shrink-0 cursor-pointer transition-opacity ${
                     safeActiveIndex === index
-                      ? 'border-[#6500B5] ring-2 ring-[#6500B5]/25 opacity-100'
-                      : 'border-[#E6E6EF] opacity-70 hover:opacity-100'
+                      ? 'border-[#B89B6A] ring-2 ring-[#B89B6A]/40 opacity-100'
+                      : 'border-[#E2DDD3] opacity-70 hover:opacity-100'
                   }`}
                 >
                   <PropertyImage
@@ -381,148 +402,199 @@ export function PropertyDetailPage() {
           )}
         </section>
 
-        {/* Main 2-column Dossier Layout */}
-        <div className="mt-8 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-10">
-          {/* Left Property Dossier Column */}
-          <div className="lg:col-span-7 space-y-10">
-            {/* Title & Price Header */}
-            <header className="pb-6 border-b border-[#E6E6EF]">
+        {/* Main 2-Column Editorial Dossier Canvas */}
+        <div className="mt-9 grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12">
+          {/* Left Editorial Narrative & Technical Ledger Column */}
+          <div className="lg:col-span-7 space-y-11">
+            {/* Title & Valuation Header */}
+            <header className="pb-7 border-b border-[#E2DDD3]">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-2 text-xs text-[#696B77]">
-                  <span className="font-mono font-semibold text-[#10169C]">{property.lotId}</span>
-                  <span aria-hidden="true">·</span>
-                  <span>
-                    {property.barangay}, {property.city}, {property.province}
+                <div className="flex flex-wrap items-center gap-2 text-xs text-[#6B665E]">
+                  <span className="font-mono font-semibold text-[#1C1B19]">{property.lotId}</span>
+                  <span aria-hidden="true" className="text-[#B89B6A]">
+                    ·
                   </span>
+                  <span>
+                    {[property.barangay, property.city, property.province]
+                      .filter(Boolean)
+                      .join(', ')}
+                  </span>
+                  <span aria-hidden="true" className="text-[#B89B6A]">
+                    ·
+                  </span>
+                  <span>{property.classification}</span>
                 </div>
-                <StatusIndicator status={property.status} />
+                <StatusIndicator status={property.status} compact />
               </div>
 
-              <h1 className="mt-3 font-display text-2xl sm:text-4xl font-bold tracking-tight text-[#202124] [text-wrap:balance]">
+              <h1 className="mt-3 font-editorial text-3xl sm:text-5xl font-semibold leading-[1.08] tracking-tight text-[#1C1B19] [text-wrap:balance]">
                 {property.title}
               </h1>
 
-              <div className="mt-5 flex flex-wrap items-baseline gap-x-6 gap-y-2">
+              <div className="mt-6 flex flex-wrap items-baseline gap-x-8 gap-y-3">
                 <div>
-                  <span className="text-xs text-[#696B77] block">Total Selling Price</span>
-                  <span className="font-display text-2xl sm:text-3xl font-bold text-[#202124] tabular-nums">
+                  <span className="text-[10px] tracking-[0.16em] uppercase text-[#6B665E] block">
+                    Total Selling Price
+                  </span>
+                  <span className="font-editorial text-3xl sm:text-4xl font-semibold text-[#1C1B19] tabular-nums">
                     {formatPhp(property.priceTotalPhp)}
                   </span>
                   {property.isNegotiable && (
-                    <span className="ml-2 text-xs font-medium text-[#6500B5]">
+                    <span className="ml-2.5 text-[11px] font-medium tracking-[0.12em] uppercase text-[#8A6D3B]">
                       Negotiable
                     </span>
                   )}
                 </div>
                 <div>
-                  <span className="text-xs text-[#696B77] block">Rate per Square Meter</span>
-                  <span className="font-mono text-base sm:text-lg font-semibold text-[#6500B5] tabular-nums">
+                  <span className="text-[10px] tracking-[0.16em] uppercase text-[#6B665E] block">
+                    Rate per Square Meter
+                  </span>
+                  <span className="font-mono text-base sm:text-lg font-medium text-[#1C1B19] tabular-nums">
                     {formatPhp(pricePerSqm)} / sqm
                   </span>
                 </div>
-                <div className="sm:ml-auto text-xs text-[#696B77]">
+                <div className="sm:ml-auto text-xs text-[#6B665E] font-mono">
                   Updated {formatDateShort(property.updatedAt)}
                 </div>
               </div>
             </header>
 
-            {/* Key Specifications Grid */}
+            {/* Hairline Architectural Specifications Ledger */}
             <section aria-labelledby="specs-heading">
-              <h2 id="specs-heading" className="font-display text-lg font-semibold text-[#202124]">
+              <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
+                Technical Schedule
+              </p>
+              <h2 id="specs-heading" className="mt-1 font-editorial text-2xl font-semibold text-[#1C1B19]">
                 Land, Boundary &amp; Title Specifications
               </h2>
-              <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 border border-[#E6E6EF] rounded-xl overflow-hidden bg-white">
-                <div className="p-4 border-b border-[#E6E6EF] sm:border-r">
-                  <p className="text-xs text-[#696B77]">Land Area</p>
-                  <p className="mt-1 text-sm font-semibold text-[#202124] tabular-nums">
+              <dl className="mt-4 grid grid-cols-1 sm:grid-cols-2 border-t border-l border-[#E2DDD3] bg-[#FAF8F4]">
+                <div className="p-4 border-r border-b border-[#E2DDD3]">
+                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                    Land Area
+                  </dt>
+                  <dd className="mt-1 text-sm font-mono font-semibold text-[#1C1B19] tabular-nums">
                     {formatSqm(property.lotAreaSqm)}
-                  </p>
+                  </dd>
                 </div>
-                <div className="p-4 border-b border-[#E6E6EF]">
-                  <p className="text-xs text-[#696B77]">Lot Dimensions</p>
-                  <p className="mt-1 text-sm font-semibold text-[#202124] tabular-nums">
-                    {property.dimensions}
-                  </p>
+                <div className="p-4 border-r border-b border-[#E2DDD3]">
+                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                    Lot Dimensions
+                  </dt>
+                  <dd className="mt-1 text-sm font-mono font-semibold text-[#1C1B19] tabular-nums">
+                    {property.dimensions || 'Available upon survey review'}
+                  </dd>
                 </div>
-                <div className="p-4 border-b border-[#E6E6EF] sm:border-r">
-                  <p className="text-xs text-[#696B77]">Classification</p>
-                  <p className="mt-1 text-sm font-semibold text-[#202124]">
+                <div className="p-4 border-r border-b border-[#E2DDD3]">
+                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                    Classification
+                  </dt>
+                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
                     {property.classification}
-                  </p>
+                  </dd>
                 </div>
-                <div className="p-4 border-b border-[#E6E6EF]">
-                  <p className="text-xs text-[#696B77]">Title Status</p>
-                  <p className="mt-1 text-sm font-semibold text-[#202124]">
-                    {property.titleStatus}
-                  </p>
+                <div className="p-4 border-r border-b border-[#E2DDD3]">
+                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                    Title Status
+                  </dt>
+                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
+                    {property.titleStatus || 'Available upon request'}
+                  </dd>
                 </div>
-                <div className="p-4 border-b border-[#E6E6EF] sm:border-r">
-                  <p className="text-xs text-[#696B77]">Tax Declaration Status</p>
-                  <p className="mt-1 text-sm font-semibold text-[#202124]">
+                <div className="p-4 border-r border-b border-[#E2DDD3]">
+                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                    Tax Declaration Status
+                  </dt>
+                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
                     {property.taxDeclarationStatus || 'Available upon request'}
-                  </p>
+                  </dd>
                 </div>
-                <div className="p-4 border-b border-[#E6E6EF]">
-                  <p className="text-xs text-[#696B77]">Road Access</p>
-                  <p className="mt-1 text-sm font-semibold text-[#202124]">
-                    {property.roadAccess}
-                  </p>
+                <div className="p-4 border-r border-b border-[#E2DDD3]">
+                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                    Road Access
+                  </dt>
+                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
+                    {property.roadAccess || 'Subject to site verification'}
+                  </dd>
                 </div>
-                <div className="p-4 border-b border-[#E6E6EF] sm:border-r">
-                  <p className="text-xs text-[#696B77]">Terrain &amp; Elevation</p>
-                  <p className="mt-1 text-sm font-semibold text-[#202124]">
-                    {property.terrain}
-                  </p>
+                <div className="p-4 border-r border-b border-[#E2DDD3]">
+                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                    Terrain &amp; Elevation
+                  </dt>
+                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
+                    {property.terrain || 'Standard grade'}
+                  </dd>
                 </div>
-                <div className="p-4 border-b border-[#E6E6EF]">
-                  <p className="text-xs text-[#696B77]">Utilities</p>
-                  <p className="mt-1 text-sm font-semibold text-[#202124]">
+                <div className="p-4 border-r border-b border-[#E2DDD3]">
+                  <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                    Utilities
+                  </dt>
+                  <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
                     {property.utilities || 'Power & water line accessible'}
-                  </p>
+                  </dd>
                 </div>
                 {property.boundaryDescription && (
-                  <div className="p-4 border-b border-[#E6E6EF] sm:col-span-2">
-                    <p className="text-xs text-[#696B77]">Lot Boundaries</p>
-                    <p className="mt-1 text-sm font-medium text-[#202124]">
+                  <div className="p-4 border-r border-b border-[#E2DDD3] sm:col-span-2">
+                    <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                      Lot Boundaries
+                    </dt>
+                    <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
                       {property.boundaryDescription}
-                    </p>
+                    </dd>
                   </div>
                 )}
                 {property.nearbyLandmarks && (
-                  <div className="p-4 sm:col-span-2">
-                    <p className="text-xs text-[#696B77]">Nearby Landmarks</p>
-                    <p className="mt-1 text-sm font-medium text-[#202124]">
+                  <div className="p-4 border-r border-b border-[#E2DDD3] sm:col-span-2">
+                    <dt className="text-[10px] tracking-[0.14em] uppercase text-[#6B665E]">
+                      Nearby Landmarks
+                    </dt>
+                    <dd className="mt-1 text-sm font-medium text-[#1C1B19]">
                       {property.nearbyLandmarks}
-                    </p>
+                    </dd>
                   </div>
                 )}
-              </div>
+              </dl>
             </section>
 
-            {/* Description & Highlights */}
+            {/* Editorial Description & Distinguishing Highlights */}
             <section aria-labelledby="about-heading">
-              <h2 id="about-heading" className="font-display text-lg font-semibold text-[#202124]">
+              <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
+                Spatial Narrative
+              </p>
+              <h2 id="about-heading" className="mt-1 font-editorial text-2xl font-semibold text-[#1C1B19]">
                 Property Overview
               </h2>
-              <p className="mt-3 text-sm sm:text-base text-[#4B4D57] leading-relaxed">
-                {property.description}
-              </p>
+              <div className="mt-4 max-w-prose space-y-4 text-sm sm:text-[15px] text-[#35322D] leading-[1.75]">
+                {descriptionParagraphs.map((para, idx) => (
+                  <p
+                    key={idx}
+                    className={
+                      idx === 0
+                        ? 'first-letter:font-editorial first-letter:text-5xl first-letter:font-semibold first-letter:float-left first-letter:mr-2.5 first-letter:mt-0.5 first-letter:leading-none first-letter:text-[#1C1B19]'
+                        : ''
+                    }
+                  >
+                    {para}
+                  </p>
+                ))}
+              </div>
 
               {property.additionalRemarks && (
-                <div className="mt-4 p-4 rounded-lg border border-[#E6E6EF] bg-[#F8F8FC] text-xs text-[#4B4D57] leading-relaxed">
-                  <span className="font-semibold text-[#202124]">Remarks &amp; Terms: </span>
+                <div className="mt-5 p-4 border border-[#E2DDD3] bg-[#F4F0E8] text-xs text-[#35322D] leading-relaxed">
+                  <span className="font-semibold uppercase tracking-[0.12em] text-[10px] text-[#1C1B19] block mb-1">
+                    Remarks &amp; Terms
+                  </span>
                   {property.additionalRemarks}
                 </div>
               )}
 
               {property.highlights.length > 0 && (
-                <ul className="mt-5 grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <ul className="mt-6 grid grid-cols-1 sm:grid-cols-2 gap-3">
                   {property.highlights.map((item, idx) => (
                     <li
                       key={idx}
-                      className="flex items-start gap-2.5 text-sm text-[#202124] bg-[#F8F8FC] border border-[#E6E6EF] rounded-lg p-3.5"
+                      className="flex items-start gap-2.5 text-sm text-[#1C1B19] bg-[#F4F0E8] border border-[#E2DDD3] p-3.5"
                     >
-                      <Check className="w-4 h-4 text-[#6500B5] shrink-0 mt-0.5" aria-hidden="true" />
+                      <Check className="w-4 h-4 text-[#8A6D3B] shrink-0 mt-0.5" aria-hidden="true" />
                       <span>{item}</span>
                     </li>
                   ))}
@@ -532,8 +604,11 @@ export function PropertyDetailPage() {
 
             {/* Multiple Videos Section */}
             <section aria-labelledby="video-heading" className="space-y-5">
-              <div className="flex items-center justify-between gap-4">
-                <h2 id="video-heading" className="font-display text-lg font-semibold text-[#202124]">
+              <div>
+                <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
+                  Motion Documentation
+                </p>
+                <h2 id="video-heading" className="mt-1 font-editorial text-2xl font-semibold text-[#1C1B19]">
                   Aerial Drone &amp; Property Videos ({videos.length})
                 </h2>
               </div>
@@ -548,15 +623,15 @@ export function PropertyDetailPage() {
                       <div key={vid.id} className="space-y-2">
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <h3 className="text-sm font-semibold text-[#202124]">
+                            <h3 className="text-sm font-semibold text-[#1C1B19]">
                               {vid.title || `${property.title} Video`}
                             </h3>
                             {vid.description && (
-                              <p className="text-xs text-[#696B77]">{vid.description}</p>
+                              <p className="text-xs text-[#6B665E]">{vid.description}</p>
                             )}
                           </div>
                           {parsed && (
-                            <span className="font-mono text-[11px] font-medium text-[#10169C] bg-[#F3EEFA] px-2 py-0.5 rounded shrink-0">
+                            <span className="font-mono text-[11px] text-[#6B665E] shrink-0">
                               {parsed.providerLabel}
                             </span>
                           )}
@@ -576,27 +651,32 @@ export function PropertyDetailPage() {
             {/* Public Buyer-Downloadable Documents Only */}
             {publicDocuments.length > 0 && (
               <section aria-labelledby="docs-heading" className="space-y-3">
-                <h2 id="docs-heading" className="font-display text-lg font-semibold text-[#202124]">
-                  Approved Public Documents ({publicDocuments.length})
-                </h2>
+                <div>
+                  <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
+                    Public Due Diligence
+                  </p>
+                  <h2 id="docs-heading" className="mt-1 font-editorial text-2xl font-semibold text-[#1C1B19]">
+                    Approved Public Documents ({publicDocuments.length})
+                  </h2>
+                </div>
                 {docError && (
-                  <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded-lg p-3">
+                  <p className="text-xs text-red-700 bg-red-50 border border-red-200 p-3">
                     {docError}
                   </p>
                 )}
-                <div className="space-y-2.5">
+                <div className="border-t border-[#E2DDD3]">
                   {publicDocuments.map((doc) => (
                     <div
                       key={doc.id}
-                      className="p-4 rounded-xl border border-[#E6E6EF] bg-[#F8F8FC] flex items-center justify-between gap-4"
+                      className="py-3.5 border-b border-[#E2DDD3] flex items-center justify-between gap-4"
                     >
                       <div className="flex items-start gap-3 min-w-0">
-                        <FileText className="w-5 h-5 text-[#6500B5] shrink-0 mt-0.5" />
+                        <FileText className="w-5 h-5 text-[#8A6D3B] shrink-0 mt-0.5" />
                         <div className="min-w-0">
-                          <p className="text-sm font-semibold text-[#202124] truncate">
+                          <p className="text-sm font-semibold text-[#1C1B19] truncate">
                             {doc.title}
                           </p>
-                          <p className="text-xs text-[#696B77]">
+                          <p className="text-xs text-[#6B665E] font-mono">
                             {doc.category} · {doc.fileName} · {formatFileSize(doc.fileSizeBytes)}
                           </p>
                         </div>
@@ -604,9 +684,9 @@ export function PropertyDetailPage() {
                       <button
                         type="button"
                         onClick={() => void handleDownloadPublicDoc(doc.id)}
-                        className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-medium text-[#6500B5] bg-white border border-[#DCD0F0] rounded-lg hover:bg-[#F3EEFA] shrink-0 cursor-pointer"
+                        className="inline-flex items-center gap-1.5 h-9 px-3.5 text-xs font-medium text-[#1C1B19] bg-[#F4F0E8] border border-[#E2DDD3] hover:border-[#B89B6A] shrink-0 cursor-pointer"
                       >
-                        <Download className="w-3.5 h-3.5" />
+                        <Download className="w-3.5 h-3.5 text-[#8A6D3B]" />
                         <span>Download</span>
                       </button>
                     </div>
@@ -617,21 +697,24 @@ export function PropertyDetailPage() {
 
             {/* Google Maps Location */}
             <section aria-labelledby="map-heading">
-              <h2 id="map-heading" className="font-display text-lg font-semibold text-[#202124]">
+              <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
+                Geographic Pin
+              </p>
+              <h2 id="map-heading" className="mt-1 font-editorial text-2xl font-semibold text-[#1C1B19]">
                 Site Location &amp; Google Maps Pin
               </h2>
-              <div className="mt-3 p-5 rounded-xl border border-[#E6E6EF] bg-[#F8F8FC] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+              <div className="mt-3 p-5 border border-[#E2DDD3] bg-[#F4F0E8] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                 <div className="flex items-start gap-3">
-                  <div className="w-10 h-10 rounded-lg bg-white border border-[#DCD0F0] flex items-center justify-center shrink-0">
-                    <MapPin className="w-5 h-5 text-[#6500B5]" />
+                  <div className="w-10 h-10 bg-[#FAF8F4] border border-[#E2DDD3] flex items-center justify-center shrink-0">
+                    <MapPin className="w-5 h-5 text-[#8A6D3B]" />
                   </div>
                   <div>
-                    <p className="text-sm font-semibold text-[#202124]">
+                    <p className="text-sm font-semibold text-[#1C1B19]">
                       {property.completeLocation ||
                         `${property.barangay}, ${property.city}, ${property.province}`}
                     </p>
-                    <p className="text-xs text-[#4B4D57] mt-0.5">{property.region}</p>
-                    <p className="text-xs font-mono text-[#696B77] mt-1 tabular-nums">
+                    <p className="text-xs text-[#6B665E] mt-0.5">{property.region}</p>
+                    <p className="text-xs font-mono text-[#1C1B19] mt-1 tabular-nums">
                       GPS: {formatLatLngDisplay(property.latitude, property.longitude)}
                     </p>
                   </div>
@@ -650,32 +733,30 @@ export function PropertyDetailPage() {
                     )}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="inline-flex items-center justify-center gap-2 h-11 px-5 text-sm font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] transition-colors whitespace-nowrap shrink-0"
+                    className="inline-flex items-center justify-center gap-2 h-10 px-5 text-xs font-medium text-[#FAF8F4] bg-[#1C1B19] hover:bg-[#35322D] transition-colors whitespace-nowrap shrink-0"
                   >
                     <span>Open in Google Maps</span>
-                    <ExternalLink className="w-4 h-4" />
+                    <ExternalLink className="w-4 h-4 text-[#B89B6A]" />
                   </a>
                 )}
               </div>
             </section>
           </div>
 
-          {/* Right Action & QR Column */}
+          {/* Right Advisory, Inquiry & Permanent QR Column */}
           <aside className="lg:col-span-5 space-y-6">
             {/* Direct Contact Channels */}
-            <div className="p-6 rounded-xl border border-[#E6E6EF] bg-white space-y-4">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <p className="text-xs text-[#696B77]">
-                    BEN MICUBO REAL ESTATE SERVICES · Advisor
-                  </p>
-                  <p className="mt-0.5 font-display text-lg font-semibold text-[#202124]">
-                    {property.agentName || 'BEN MICUBO REAL ESTATE SERVICES'}
-                  </p>
-                  {property.agentPhone && (
-                    <p className="text-xs font-mono text-[#4B4D57] mt-0.5">{property.agentPhone}</p>
-                  )}
-                </div>
+            <div className="p-6 border border-[#E2DDD3] bg-[#FAF8F4] space-y-4">
+              <div>
+                <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
+                  BEN MICUBO REAL ESTATE SERVICES · Advisor
+                </p>
+                <p className="mt-1 font-editorial text-2xl font-semibold text-[#1C1B19]">
+                  {property.agentName || 'BEN MICUBO REAL ESTATE SERVICES'}
+                </p>
+                {property.agentPhone && (
+                  <p className="text-xs font-mono text-[#6B665E] mt-0.5">{property.agentPhone}</p>
+                )}
               </div>
 
               {property.agentWhatsapp || property.agentMessenger || property.agentPhone ? (
@@ -689,9 +770,9 @@ export function PropertyDetailPage() {
                       )}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="h-11 px-4 rounded-lg bg-[#6500B5] text-white text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#540098] transition-colors"
+                      className="h-11 px-4 bg-[#1C1B19] text-[#FAF8F4] text-xs font-medium flex items-center justify-center gap-2 hover:bg-[#35322D] transition-colors"
                     >
-                      <MessageCircle className="w-4 h-4" />
+                      <MessageCircle className="w-4 h-4 text-[#B89B6A]" />
                       <span>Message on WhatsApp</span>
                     </a>
                   )}
@@ -700,57 +781,82 @@ export function PropertyDetailPage() {
                       href={buildMessengerLink(property.agentMessenger)}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="h-11 px-4 rounded-lg bg-white border border-[#D6D6E4] text-[#202124] text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#F8F8FC] transition-colors"
+                      className="h-11 px-4 bg-[#F4F0E8] border border-[#E2DDD3] text-[#1C1B19] text-xs font-medium flex items-center justify-center gap-2 hover:border-[#B89B6A] transition-colors"
                     >
-                      <Send className="w-4 h-4 text-[#10169C]" />
+                      <Send className="w-4 h-4 text-[#8A6D3B]" />
                       <span>Chat on Messenger</span>
                     </a>
                   )}
                   {property.agentPhone && (
                     <a
                       href={`tel:${property.agentPhone.replace(/\s+/g, '')}`}
-                      className="h-11 px-4 rounded-lg bg-white border border-[#D6D6E4] text-[#202124] text-sm font-medium flex items-center justify-center gap-2 hover:bg-[#F8F8FC] transition-colors"
+                      className="h-11 px-4 bg-[#F4F0E8] border border-[#E2DDD3] text-[#1C1B19] text-xs font-medium flex items-center justify-center gap-2 hover:border-[#B89B6A] transition-colors"
                     >
-                      <Phone className="w-4 h-4 text-[#6500B5]" />
+                      <Phone className="w-4 h-4 text-[#8A6D3B]" />
                       <span>Call {property.agentPhone}</span>
                     </a>
                   )}
                 </div>
               ) : (
-                <p className="text-xs text-[#4B4D57] bg-[#F8F8FC] border border-[#E6E6EF] rounded-lg px-3.5 py-2.5">
+                <p className="text-xs text-[#6B665E] bg-[#F4F0E8] border border-[#E2DDD3] px-3.5 py-2.5">
                   Direct phone/messaging contact has not been published for this preview listing yet. Please use the inquiry form below to contact BEN MICUBO REAL ESTATE SERVICES.
                 </p>
               )}
             </div>
 
+            {/* 5-Page Printable A4 Editorial Dossier Card */}
+            <div className="p-6 border border-[#E2DDD3] bg-[#F4F0E8] space-y-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
+                    Editorial Monograph
+                  </p>
+                  <h2 className="mt-0.5 font-editorial text-xl font-semibold text-[#1C1B19]">
+                    5-Page Property Dossier
+                  </h2>
+                </div>
+                <FileText className="w-5 h-5 text-[#8A6D3B] shrink-0" />
+              </div>
+              <p className="text-xs text-[#6B665E] leading-relaxed">
+                Preview or export the complete 5-page A4 folio containing approved imagery, land specifications, public documents, coordinates, and QR verification.
+              </p>
+              <Link
+                to={dossierRoute}
+                className="inline-flex w-full items-center justify-center gap-2 h-10 px-4 text-xs font-medium text-[#FAF8F4] bg-[#1C1B19] hover:bg-[#35322D] transition-colors"
+              >
+                <Printer className="w-4 h-4 text-[#B89B6A]" />
+                <span>Preview &amp; Print A4 Dossier (PDF)</span>
+              </Link>
+            </div>
+
             {/* Buyer Inquiry Form */}
-            <div className="p-6 rounded-xl border border-[#E6E6EF] bg-[#F8F8FC]">
-              <h2 className="font-display text-lg font-semibold text-[#202124]">
+            <div className="p-6 border border-[#E2DDD3] bg-white">
+              <h2 className="font-editorial text-2xl font-semibold text-[#1C1B19]">
                 Inquire About {property.lotId}
               </h2>
-              <p className="mt-1 text-xs text-[#4B4D57] mb-4">
+              <p className="mt-1 text-xs text-[#6B665E] mb-4">
                 Request the certified true copy of title, sample computation, or schedule a site tripping.
               </p>
               <InquiryForm propertyLotId={property.lotId} propertyTitle={property.title} />
             </div>
 
             {/* Permanent QR Code & Signage Card */}
-            <div className="p-6 rounded-xl border border-[#E6E6EF] bg-white">
+            <div className="p-6 border border-[#E2DDD3] bg-[#FAF8F4]">
               <div className="flex items-center justify-between gap-2 mb-4">
                 <div>
-                  <h2 className="font-display text-base font-semibold text-[#202124]">
+                  <h2 className="font-editorial text-xl font-semibold text-[#1C1B19]">
                     Permanent Property QR
                   </h2>
-                  <p className="text-xs text-[#696B77]">
+                  <p className="text-xs text-[#6B665E]">
                     Links permanently to /property/{property.lotId}
                   </p>
                 </div>
                 {canonicalUrlValidation.valid ? (
                   <Link
                     to={`/signage/${encodeURIComponent(property.lotId)}`}
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6500B5] bg-[#F3EEFA] rounded-md hover:bg-[#E8DDF7] transition-colors whitespace-nowrap"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#1C1B19] bg-[#F4F0E8] border border-[#E2DDD3] hover:border-[#B89B6A] transition-colors whitespace-nowrap"
                   >
-                    <Printer className="w-3.5 h-3.5" />
+                    <Printer className="w-3.5 h-3.5 text-[#8A6D3B]" />
                     <span>Printable Sign</span>
                   </Link>
                 ) : (
@@ -758,7 +864,7 @@ export function PropertyDetailPage() {
                     type="button"
                     disabled
                     title="Configure VITE_PUBLIC_SITE_URL or a public HTTPS domain in Settings to enable printable QR signage."
-                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#696B77] bg-[#F8F8FC] border border-[#E6E6EF] rounded-md opacity-70 cursor-not-allowed whitespace-nowrap"
+                    className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-[#6B665E] bg-[#F4F0E8] border border-[#E2DDD3] opacity-70 cursor-not-allowed whitespace-nowrap"
                   >
                     <Printer className="w-3.5 h-3.5" />
                     <span>Signage Disabled</span>
@@ -776,15 +882,15 @@ export function PropertyDetailPage() {
                 />
               </div>
 
-              <div className="mt-4 pt-4 border-t border-[#EFEFF6]">
-                <div className="flex items-center justify-between gap-2 bg-[#F8F8FC] border border-[#E6E6EF] rounded-lg px-3 py-2">
-                  <span className="text-xs font-mono text-[#4B4D57] truncate">
+              <div className="mt-4 pt-4 border-t border-[#E2DDD3]">
+                <div className="flex items-center justify-between gap-2 bg-[#F4F0E8] border border-[#E2DDD3] px-3 py-2">
+                  <span className="text-xs font-mono text-[#1C1B19] truncate">
                     {canonicalUrlValidation.valid ? qrTargetUrl : `/property/${property.lotId}`}
                   </span>
                   <button
                     type="button"
                     onClick={handleCopyPermalink}
-                    className="inline-flex items-center gap-1 text-xs font-medium text-[#6500B5] hover:underline shrink-0 cursor-pointer"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-[#8A6D3B] hover:underline shrink-0 cursor-pointer"
                   >
                     {copiedUrl ? (
                       <>
@@ -813,7 +919,7 @@ export function PropertyDetailPage() {
           aria-label="Expanded property photo"
           onTouchStart={handleGalleryTouchStart}
           onTouchEnd={handleGalleryTouchEnd}
-          className="fixed inset-0 z-50 bg-black/90 flex flex-col items-center justify-center p-4 touch-pan-y"
+          className="fixed inset-0 z-50 bg-black/92 flex flex-col items-center justify-center p-4 touch-pan-y"
         >
           <button
             type="button"
@@ -829,12 +935,12 @@ export function PropertyDetailPage() {
               src={currentPhoto}
               alt={currentImage?.caption || `${property.title} full view`}
               loading="eager"
-              className="max-h-[80vh] w-auto object-contain rounded-lg"
+              className="max-h-[80vh] w-auto object-contain"
             />
           </div>
 
           {currentImage?.caption && (
-            <p className="mt-2 text-xs text-white/90 text-center max-w-2xl">
+            <p className="mt-2 text-xs text-white/90 text-center max-w-2xl font-editorial italic">
               {currentImage.caption}
             </p>
           )}
@@ -844,7 +950,7 @@ export function PropertyDetailPage() {
               <button
                 type="button"
                 onClick={handlePrevPhoto}
-                className="px-4 py-2 text-xs font-medium bg-white/15 rounded-md hover:bg-white/25 cursor-pointer"
+                className="px-4 py-2 text-xs font-medium bg-white/15 hover:bg-white/25 cursor-pointer"
               >
                 Previous
               </button>
@@ -854,7 +960,7 @@ export function PropertyDetailPage() {
               <button
                 type="button"
                 onClick={handleNextPhoto}
-                className="px-4 py-2 text-xs font-medium bg-white/15 rounded-md hover:bg-white/25 cursor-pointer"
+                className="px-4 py-2 text-xs font-medium bg-white/15 hover:bg-white/25 cursor-pointer"
               >
                 Next
               </button>

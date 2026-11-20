@@ -571,13 +571,23 @@ interface PreviousRelationsSnapshot {
   documents: Array<Record<string, unknown>>;
 }
 
+function nextOptimisticTimestamp(previousTimestamp?: string | null): string {
+  const nowMs = Date.now();
+  const prevMs = previousTimestamp ? Date.parse(previousTimestamp) : Number.NaN;
+  if (Number.isFinite(prevMs) && nowMs <= prevMs) {
+    return new Date(prevMs + 1).toISOString();
+  }
+  return new Date(nowMs).toISOString();
+}
+
 async function restorePropertyRowSnapshot(
   client: NonNullable<SupabaseClientLike>,
   propertyId: string,
-  prevRow: SupabasePropertyRow
-): Promise<void> {
+  prevRow: SupabasePropertyRow,
+  expectedCommittedUpdatedAt?: string
+): Promise<boolean> {
   try {
-    await client
+    let query = client
       .from('properties')
       .update({
         lot_id: prevRow.lot_id,
@@ -621,8 +631,16 @@ async function restorePropertyRowSnapshot(
         updated_at: prevRow.updated_at,
       })
       .eq('id', propertyId);
+
+    if (expectedCommittedUpdatedAt) {
+      query = query.eq('updated_at', expectedCommittedUpdatedAt);
+    }
+
+    const {data, error} = await query.select('id').maybeSingle();
+    if (error) return false;
+    return expectedCommittedUpdatedAt ? Boolean(data) : true;
   } catch {
-    // Best-effort compensating rollback
+    return false;
   }
 }
 
@@ -1463,6 +1481,15 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           }
 
           const prevSnapshot = existingRow as SupabasePropertyRow;
+          if (
+            normalizedInput.expectedUpdatedAt &&
+            prevSnapshot.updated_at !== normalizedInput.expectedUpdatedAt
+          ) {
+            throw new Error(
+              'Concurrent update detected: another administrator saved newer changes while this listing was open. Reload before saving.'
+            );
+          }
+
           const lockedLotId = prevSnapshot.lot_id;
           const isArchived = normalizedInput.visibility === 'Archived' || normalizedInput.isArchived;
           const willBePublished = normalizedInput.visibility === 'Published' && !isArchived;
@@ -1510,15 +1537,19 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           const newlyPromotedPublicPaths: string[] = [];
 
           // 3. Commit properties row FIRST with optimistic concurrency lock on updated_at
-          const initialRow = mapPropertyToRow({
-            ...normalizedInput,
-            lotId: lockedLotId,
-            isArchived,
-            images: orderedRawImages,
-            videos: validatedVideos,
-            youtubeUrl: validatedVideos[0]?.url || '',
-            photos: willBePublished ? prevSnapshot.photos || [] : [],
-          });
+          const step3UpdatedAt = nextOptimisticTimestamp(prevSnapshot.updated_at);
+          const initialRow = {
+            ...mapPropertyToRow({
+              ...normalizedInput,
+              lotId: lockedLotId,
+              isArchived,
+              images: orderedRawImages,
+              videos: validatedVideos,
+              youtubeUrl: validatedVideos[0]?.url || '',
+              photos: willBePublished ? prevSnapshot.photos || [] : [],
+            }),
+            updated_at: step3UpdatedAt,
+          };
 
           const {data: updatedPropRow, error: propUpdateErr} = await client
             .from('properties')
@@ -1526,13 +1557,15 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             .eq('id', id)
             .eq('updated_at', prevSnapshot.updated_at)
             .select()
-            .single();
+            .maybeSingle();
           if (propUpdateErr) throw new Error(propUpdateErr.message);
           if (!updatedPropRow) {
             throw new Error(
               'Concurrent update detected: this listing was modified by another session. Reload and try again.'
             );
           }
+
+          const committedUpdatedAt = (updatedPropRow.updated_at as string) || step3UpdatedAt;
 
           const prevRelations: PreviousRelationsSnapshot = {
             images: (prevImgRows || []) as Array<Record<string, unknown>>,
@@ -1587,13 +1620,20 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               deferStorageCleanup: true,
             });
 
+            const finalUpdatedAt = nextOptimisticTimestamp(committedUpdatedAt);
             const {data: finalPropRow, error: photosErr} = await client
               .from('properties')
-              .update({photos: orderedPhotos, updated_at: new Date().toISOString()})
+              .update({photos: orderedPhotos, updated_at: finalUpdatedAt})
               .eq('id', id)
+              .eq('updated_at', committedUpdatedAt)
               .select()
-              .single();
+              .maybeSingle();
             if (photosErr) throw new Error(photosErr.message);
+            if (!finalPropRow) {
+              throw new Error(
+                'Concurrent update detected during media sync: another administrator saved newer changes.'
+              );
+            }
 
             // 6. Post-commit Storage cleanup (verified against cross-record references)
             const [safePubOrphans, safePrivOrphans, safeRedundantPriv] = await Promise.all([
@@ -1627,12 +1667,32 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             return normalizeProperty({
               ...preparedInput,
               id: finalPropRow?.id || updatedPropRow.id,
-              updatedAt: finalPropRow?.updated_at || updatedPropRow.updated_at,
+              updatedAt: finalPropRow?.updated_at || committedUpdatedAt,
             });
           } catch (err) {
-            await cleanupPromotedPublicObjects(newlyPromotedPublicPaths, client);
-            await restorePropertyRowSnapshot(client, id, prevSnapshot);
-            await restoreRelationsSnapshot(client, id, prevRelations);
+            const restoredRow = await restorePropertyRowSnapshot(
+              client,
+              id,
+              prevSnapshot,
+              committedUpdatedAt
+            );
+            if (restoredRow) {
+              await restoreRelationsSnapshot(client, id, prevRelations);
+            }
+            if (newlyPromotedPublicPaths.length > 0) {
+              const safePromotedCleanup = await findDeletableStoragePaths(
+                client,
+                PUBLIC_MEDIA_BUCKET,
+                newlyPromotedPublicPaths
+              );
+              await cleanupPromotedPublicObjects(safePromotedCleanup, client);
+            }
+            if (!restoredRow) {
+              const baseMessage = err instanceof Error ? err.message : 'Update failed.';
+              throw new Error(
+                `${baseMessage} Concurrent changes from another administrator were detected and preserved.`
+              );
+            }
             throw err;
           }
         }
@@ -1641,6 +1701,14 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         const current = existing.find((item) => item.id === id);
         if (!current) {
           throw new Error('Property record not found.');
+        }
+        if (
+          normalizedInput.expectedUpdatedAt &&
+          current.updatedAt !== normalizedInput.expectedUpdatedAt
+        ) {
+          throw new Error(
+            'Concurrent update detected: another session modified this listing. Reload before saving.'
+          );
         }
 
         const lockedLotId = current.lotId;
@@ -1661,7 +1729,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               : normalizedInput.photos,
           videos: validatedVideos,
           youtubeUrl: validatedVideos[0]?.url || '',
-          updatedAt: new Date().toISOString(),
+          updatedAt: nextOptimisticTimestamp(current.updatedAt),
         });
         const next = existing.map((item) => (item.id === id ? updated : item));
         writeDemoProperties(next);
@@ -1709,24 +1777,26 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
 
             // 1. Update property visibility FIRST with optimistic concurrency lock
             const nextPublishedAt = mapped.publishedAt || new Date().toISOString();
+            const step1UpdatedAt = nextOptimisticTimestamp(prevSnapshot.updated_at);
             const {data: pubRow, error: propPubErr} = await client
               .from('properties')
               .update({
                 visibility: 'Published',
                 is_archived: false,
                 published_at: nextPublishedAt,
-                updated_at: new Date().toISOString(),
+                updated_at: step1UpdatedAt,
               })
               .eq('id', id)
               .eq('updated_at', prevSnapshot.updated_at)
               .select()
-              .single();
+              .maybeSingle();
             if (propPubErr) throw new Error(propPubErr.message);
             if (!pubRow) {
               throw new Error(
                 'Concurrent update detected while publishing. Reload and try again.'
               );
             }
+            const committedUpdatedAt = (pubRow.updated_at as string) || step1UpdatedAt;
 
           try {
             const updatedImages: PropertyImageItem[] = [];
@@ -1849,13 +1919,20 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             const fallbackPhotos =
               orderedApprovedUrls.length > 0 ? orderedApprovedUrls : mapped.photos;
 
+            const finalUpdatedAt = nextOptimisticTimestamp(committedUpdatedAt);
             const {data: finalRow, error: photoSyncErr} = await client
               .from('properties')
-              .update({photos: fallbackPhotos, updated_at: new Date().toISOString()})
+              .update({photos: fallbackPhotos, updated_at: finalUpdatedAt})
               .eq('id', id)
+              .eq('updated_at', committedUpdatedAt)
               .select()
-              .single();
+              .maybeSingle();
             if (photoSyncErr) throw new Error(photoSyncErr.message);
+            if (!finalRow) {
+              throw new Error(
+                'Concurrent update detected while publishing media. Newer administrator changes were detected.'
+              );
+            }
 
             // Post-commit cleanup of redundant staged private copies
             if (promotedPrivateDuplicates.length > 0) {
@@ -1876,12 +1953,32 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               images: sortImagesCoverFirst(updatedImages),
               photos: fallbackPhotos,
               documents: updatedDocs,
-              updatedAt: finalRow?.updated_at || pubRow?.updated_at || new Date().toISOString(),
+              updatedAt: finalRow?.updated_at || committedUpdatedAt,
             });
           } catch (err) {
-            await cleanupPromotedPublicObjects(newlyPromotedPublicPaths, client);
-            await restorePropertyRowSnapshot(client, id, prevSnapshot);
-            await restoreRelationsSnapshot(client, id, prevRelations);
+            const restoredRow = await restorePropertyRowSnapshot(
+              client,
+              id,
+              prevSnapshot,
+              committedUpdatedAt
+            );
+            if (restoredRow) {
+              await restoreRelationsSnapshot(client, id, prevRelations);
+            }
+            if (newlyPromotedPublicPaths.length > 0) {
+              const safePromotedCleanup = await findDeletableStoragePaths(
+                client,
+                PUBLIC_MEDIA_BUCKET,
+                newlyPromotedPublicPaths
+              );
+              await cleanupPromotedPublicObjects(safePromotedCleanup, client);
+            }
+            if (!restoredRow) {
+              const baseMessage = err instanceof Error ? err.message : 'Publishing failed.';
+              throw new Error(
+                `${baseMessage} Concurrent changes from another administrator were detected and preserved.`
+              );
+            }
             throw err;
           }
         }
@@ -1903,25 +2000,27 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         }
 
         // 2. Commit DB unpublish & relation demotion inside rollback boundary
-        try {
-          const {data: unpubRow, error: propUnpubErr} = await client
-            .from('properties')
-            .update({
-              visibility,
-              is_archived: isArchived,
-              updated_at: new Date().toISOString(),
-            })
-            .eq('id', id)
-            .eq('updated_at', prevSnapshot.updated_at)
-            .select()
-            .single();
-          if (propUnpubErr) throw new Error(propUnpubErr.message);
-          if (!unpubRow) {
-            throw new Error(
-              'Concurrent update detected while unpublishing. Reload and try again.'
-            );
-          }
+        const step2UpdatedAt = nextOptimisticTimestamp(prevSnapshot.updated_at);
+        const {data: unpubRow, error: propUnpubErr} = await client
+          .from('properties')
+          .update({
+            visibility,
+            is_archived: isArchived,
+            updated_at: step2UpdatedAt,
+          })
+          .eq('id', id)
+          .eq('updated_at', prevSnapshot.updated_at)
+          .select()
+          .maybeSingle();
+        if (propUnpubErr) throw new Error(propUnpubErr.message);
+        if (!unpubRow) {
+          throw new Error(
+            'Concurrent update detected while unpublishing. Reload and try again.'
+          );
+        }
+        const committedUpdatedAt = (unpubRow.updated_at as string) || step2UpdatedAt;
 
+        try {
           const demotedImages: PropertyImageItem[] = [];
           for (const row of imgRows) {
             let nextUrl = row.public_url;
@@ -1975,12 +2074,23 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           }
 
           const demotedPhotoUrls = sortImagesCoverFirst(demotedImages).map((i) => i.url);
+          let finalUpdatedAt = committedUpdatedAt;
           if (demotedPhotoUrls.length > 0) {
-            const {error: photosUpdErr} = await client
+            const nextUnpubTs = nextOptimisticTimestamp(committedUpdatedAt);
+            const {data: photosUpdRow, error: photosUpdErr} = await client
               .from('properties')
-              .update({photos: demotedPhotoUrls})
-              .eq('id', id);
+              .update({photos: demotedPhotoUrls, updated_at: nextUnpubTs})
+              .eq('id', id)
+              .eq('updated_at', committedUpdatedAt)
+              .select()
+              .maybeSingle();
             if (photosUpdErr) throw new Error(photosUpdErr.message);
+            if (!photosUpdRow) {
+              throw new Error(
+                'Concurrent update detected while unpublishing media. Newer administrator changes were detected.'
+              );
+            }
+            finalUpdatedAt = (photosUpdRow.updated_at as string) || nextUnpubTs;
           }
 
           // 3. Post-commit physical deletion from property-media-public (excluding any path still referenced elsewhere)
@@ -1999,11 +2109,24 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             images: sortImagesCoverFirst(demotedImages),
             photos: demotedPhotoUrls.length > 0 ? demotedPhotoUrls : mapped.photos,
             documents: demotedDocs,
-            updatedAt: unpubRow?.updated_at || new Date().toISOString(),
+            updatedAt: finalUpdatedAt,
           });
         } catch (err) {
-          await restorePropertyRowSnapshot(client, id, prevSnapshot);
-          await restoreRelationsSnapshot(client, id, prevRelations);
+          const restoredRow = await restorePropertyRowSnapshot(
+            client,
+            id,
+            prevSnapshot,
+            committedUpdatedAt
+          );
+          if (restoredRow) {
+            await restoreRelationsSnapshot(client, id, prevRelations);
+          }
+          if (!restoredRow) {
+            const baseMessage = err instanceof Error ? err.message : 'Unpublishing failed.';
+            throw new Error(
+              `${baseMessage} Concurrent changes from another administrator were detected and preserved.`
+            );
+          }
           throw err;
         }
       }
