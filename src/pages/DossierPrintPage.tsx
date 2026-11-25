@@ -1,6 +1,6 @@
 import {useEffect, useState} from 'react';
 import {Link, useParams, useSearchParams} from 'react-router-dom';
-import {ArrowLeft, Eye, FileText, Printer} from 'lucide-react';
+import {AlertTriangle, ArrowLeft, Eye, FileText, Printer, RefreshCw} from 'lucide-react';
 import {usePropertyStore} from '../context/PropertyStoreContext';
 import {PropertyDossierA4} from '../components/PropertyDossierA4';
 import {getAuthorizedDocumentDownloadUrl} from '../services/storageService';
@@ -16,6 +16,8 @@ export function DossierPrintPage() {
     effectiveCanonicalSiteUrl,
     isAdminAuthorized,
     isDemoMode,
+    isServiceUnavailable,
+    refreshAll,
   } = usePropertyStore();
   const property = getByLotId(lotId);
   const [docError, setDocError] = useState('');
@@ -32,6 +34,40 @@ export function DossierPrintPage() {
     return (
       <main className="min-h-[calc(100vh-64px)] bg-[#F4F0E8] py-12 px-4">
         <div className="max-w-[210mm] mx-auto h-96 bg-[#FAF8F4] border border-[#E2DDD3] animate-pulse" />
+      </main>
+    );
+  }
+
+  if (!property && isServiceUnavailable) {
+    return (
+      <main className="min-h-[calc(100vh-64px)] bg-[#FAF8F4] py-20 px-4 text-center">
+        <AlertTriangle className="w-8 h-8 text-amber-700 mx-auto mb-3" />
+        <p className="font-mono text-xs text-[#8A6D3B] uppercase tracking-widest">
+          Temporary Service Interruption
+        </p>
+        <h1 className="mt-2 font-editorial text-3xl font-semibold text-[#1C1B19]">
+          Property Dossier Temporarily Unavailable
+        </h1>
+        <p className="mt-2 max-w-md mx-auto text-sm text-[#6B665E]">
+          Unable to connect to the live database for {decodeURIComponent(lotId).toUpperCase()}. Please retry shortly.
+        </p>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <button
+            type="button"
+            onClick={() => void refreshAll()}
+            className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-medium text-[#FAF8F4] bg-[#1C1B19] hover:bg-[#35322D] cursor-pointer"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span>Retry Connection</span>
+          </button>
+          <Link
+            to="/"
+            className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-medium text-[#1C1B19] bg-[#F4F0E8] border border-[#E2DDD3] hover:border-[#B89B6A]"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to All Listings</span>
+          </Link>
+        </div>
       </main>
     );
   }

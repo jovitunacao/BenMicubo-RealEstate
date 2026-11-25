@@ -3,7 +3,13 @@ import {
   DEMO_INQUIRIES,
   DEMO_PROPERTIES,
 } from '../data/demoProperties';
-import {isSupabaseConfigured, supabase} from '../lib/supabase';
+import {
+  isExplicitDemoMode,
+  isNodeTestRuntime,
+  isSupabaseConfigured,
+  supabase,
+} from '../lib/supabase';
+import {SupabaseQueryError} from '../lib/supabaseDiagnostics';
 import type {
   BuyerInquiry,
   InquiryStatus,
@@ -1705,16 +1711,60 @@ async function withPropertyMutationLock<T>(
   }
 }
 
-export function createPropertyService(getClient?: () => SupabaseClientLike) {
+export interface CreatePropertyServiceOptions {
+  allowLocalDemo?: boolean;
+}
+
+function toSupabaseQueryError(
+  operation: string,
+  error: {message: string; code?: string | null; details?: string | null; hint?: string | null}
+): SupabaseQueryError {
+  return new SupabaseQueryError(error.message, {
+    operation,
+    code: error.code ?? null,
+    details: error.details ?? null,
+    hint: error.hint ?? null,
+  });
+}
+
+export function createPropertyService(
+  getClient?: () => SupabaseClientLike,
+  options?: CreatePropertyServiceOptions
+) {
   const activeClient = () => resolveSupabaseClient(getClient ? getClient() : undefined);
+  const canUseLocalDemo = () =>
+    options?.allowLocalDemo ?? (isExplicitDemoMode || isNodeTestRuntime);
+
+  const assertLocalDemoAllowed = (operation: string) => {
+    if (!canUseLocalDemo()) {
+      throw new SupabaseQueryError(
+        'Supabase connection is not configured for this environment and demo mode is disabled.',
+        {operation, code: 'MISSING_ENV'}
+      );
+    }
+  };
 
   return {
     async checkCurrentUserAdminRole(userId: string): Promise<{
       isAuthorized: boolean;
       role: 'admin' | 'super_admin' | null;
+      error?: SupabaseQueryError;
     }> {
       const client = activeClient();
-      if (!client || !userId) {
+      if (!client) {
+        if (!canUseLocalDemo()) {
+          return {
+            isAuthorized: false,
+            role: null,
+            error: new SupabaseQueryError(
+              'Supabase connection is not configured for this environment and demo mode is disabled.',
+              {operation: 'public.admin_users', code: 'MISSING_ENV'}
+            ),
+          };
+        }
+        return {isAuthorized: false, role: null};
+      }
+      if (!userId) {
         return {isAuthorized: false, role: null};
       }
       const {data, error} = await client
@@ -1722,7 +1772,14 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         .select('role, is_active')
         .eq('user_id', userId)
         .maybeSingle();
-      if (error || !data || !data.is_active) {
+      if (error) {
+        return {
+          isAuthorized: false,
+          role: null,
+          error: toSupabaseQueryError('public.admin_users', error),
+        };
+      }
+      if (!data || !data.is_active) {
         return {isAuthorized: false, role: null};
       }
       const role = data.role === 'super_admin' ? 'super_admin' : 'admin';
@@ -1739,7 +1796,12 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               '*, property_images(*), property_videos(*), property_documents(*), property_presentations(*)'
             )
             .order('lot_id', {ascending: true});
-          if (error) throw new Error(error.message);
+          if (error) {
+            throw toSupabaseQueryError(
+              'public.properties (admin with property_presentations)',
+              error
+            );
+          }
           const mapped = (data as SupabasePropertyRow[]).map((r) =>
             mapRowToProperty(r, client)
           );
@@ -1752,17 +1814,19 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           .from('public_properties')
           .select('*')
           .order('lot_id', {ascending: true});
-        if (propErr) throw new Error(propErr.message);
+        if (propErr) {
+          throw toSupabaseQueryError('public.public_properties', propErr);
+        }
 
         const rows = (propRows || []) as SupabasePropertyRow[];
         if (rows.length === 0) return [];
         const propertyIds = rows.map((r) => r.id);
 
         const [
-          {data: imgRows},
-          {data: vidRows},
-          {data: docRows},
-          {data: presRows},
+          {data: imgRows, error: imgErr},
+          {data: vidRows, error: vidErr},
+          {data: docRows, error: docErr},
+          {data: presRows, error: presErr},
         ] = await Promise.all([
           client.from('property_images').select('*').in('property_id', propertyIds),
           client.from('property_videos').select('*').in('property_id', propertyIds),
@@ -1772,6 +1836,13 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             .select('*')
             .in('property_id', propertyIds),
         ]);
+
+        if (imgErr) throw toSupabaseQueryError('public.property_images', imgErr);
+        if (vidErr) throw toSupabaseQueryError('public.property_videos', vidErr);
+        if (docErr) throw toSupabaseQueryError('public.property_documents', docErr);
+        if (presErr) {
+          throw toSupabaseQueryError('public.public_property_presentations', presErr);
+        }
 
         return rows.map((row) => {
           const enriched: SupabasePropertyRow = {
@@ -1787,6 +1858,9 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         });
       }
 
+      assertLocalDemoAllowed(
+        includeUnpublished ? 'public.properties' : 'public.public_properties'
+      );
       const items = readDemoProperties();
       return includeUnpublished
         ? items
@@ -2008,6 +2082,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         }
       }
 
+      assertLocalDemoAllowed('createProperty');
       const [preparedImages, preparedDocuments, preparedPresentations] = await Promise.all([
         prepareImagesForVisibility(orderedRawImages, normalizedInput.visibility),
         prepareDocumentsForVisibility(normalizedInput.documents || [], normalizedInput.visibility),
@@ -2349,6 +2424,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           }
         }
 
+        assertLocalDemoAllowed('updateProperty');
         const existing = readDemoProperties();
         const current = existing.find((item) => item.id === id);
         if (!current) {
@@ -2948,6 +3024,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           }
         }
 
+        assertLocalDemoAllowed('setVisibility');
         const existing = readDemoProperties();
         if (visibility === 'Published') {
           const target = existing.find((item) => item.id === id);
@@ -3005,6 +3082,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         return;
       }
 
+      assertLocalDemoAllowed('bulkUpdateStatus');
       const idSet = new Set(ids);
       const existing = readDemoProperties();
       writeDemoProperties(
@@ -3086,6 +3164,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           return;
         }
 
+        assertLocalDemoAllowed('deleteProperty');
         const existing = readDemoProperties();
         writeDemoProperties(existing.filter((item) => item.id !== id));
       });
@@ -3098,7 +3177,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           .from('inquiries')
           .select('*')
           .order('created_at', {ascending: false});
-        if (error) throw new Error(error.message);
+        if (error) throw toSupabaseQueryError('public.inquiries', error);
         return (data || []).map((row) => ({
           id: row.id,
           propertyLotId: row.property_lot_id,
@@ -3113,6 +3192,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         }));
       }
 
+      assertLocalDemoAllowed('listInquiries');
       return readDemoInquiries();
     },
 
@@ -3131,7 +3211,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           preferred_date: payload.preferredDate || null,
           message: payload.message,
         });
-        if (error) throw new Error(error.message);
+        if (error) throw toSupabaseQueryError('public.inquiries (insert)', error);
         return {
           id: `inq-${Date.now()}`,
           propertyLotId: payload.propertyLotId,
@@ -3146,6 +3226,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         };
       }
 
+      assertLocalDemoAllowed('createInquiry');
       const created: BuyerInquiry = {
         ...payload,
         id: `inq-${Date.now()}`,
@@ -3164,10 +3245,11 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           .from('inquiries')
           .update({status})
           .eq('id', id);
-        if (error) throw new Error(error.message);
+        if (error) throw toSupabaseQueryError('public.inquiries (update)', error);
         return;
       }
 
+      assertLocalDemoAllowed('updateInquiryStatus');
       const next = readDemoInquiries().map((item) =>
         item.id === id ? {...item, status} : item
       );
@@ -3192,6 +3274,10 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             defaultAgentMessenger: data.default_agent_messenger || '',
           };
         }
+        return DEFAULT_SITE_SETTINGS;
+      }
+      if (!canUseLocalDemo()) {
+        return DEFAULT_SITE_SETTINGS;
       }
       return readLocalSettings();
     },
@@ -3208,14 +3294,16 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           default_agent_messenger: settings.defaultAgentMessenger,
           updated_at: new Date().toISOString(),
         });
-        if (error) throw new Error(error.message);
+        if (error) throw toSupabaseQueryError('public.site_settings', error);
         return settings;
       }
+      assertLocalDemoAllowed('saveSiteSettings');
       writeLocalSettings(settings);
       return settings;
     },
 
     resetDemoData(): {properties: Property[]; inquiries: BuyerInquiry[]} {
+      assertLocalDemoAllowed('resetDemoData');
       const normalized = DEMO_PROPERTIES.map((p) => normalizeProperty(p));
       writeDemoProperties(normalized);
       writeDemoInquiries(DEMO_INQUIRIES);

@@ -11,7 +11,7 @@ const INQUIRY_COOLDOWN_KEY = 'benmicubo_last_inquiry_ts';
 const COOLDOWN_MS = 30_000;
 
 export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
-  const {submitInquiry, isDemoMode} = usePropertyStore();
+  const {submitInquiry, isDemoMode, isServiceUnavailable} = usePropertyStore();
 
   const [buyerName, setBuyerName] = useState('');
   const [buyerEmail, setBuyerEmail] = useState('');
@@ -238,11 +238,13 @@ export function InquiryForm({propertyLotId, propertyTitle}: InquiryFormProps) {
         <p className="text-xs text-[#696B77]">
           {isDemoMode
             ? 'Demo form — saves directly to local Admin Inbox'
-            : 'Direct inquiry routed to BEN MICUBO REAL ESTATE SERVICES'}
+            : isServiceUnavailable
+              ? 'Online inquiry submission is temporarily unavailable while the database reconnects.'
+              : 'Direct inquiry routed to BEN MICUBO REAL ESTATE SERVICES'}
         </p>
         <button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || (!isDemoMode && isServiceUnavailable)}
           className="h-11 px-6 text-sm font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] transition-colors disabled:opacity-60 cursor-pointer whitespace-nowrap"
         >
           {submitting ? 'Sending...' : 'Submit Inquiry'}

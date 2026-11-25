@@ -517,7 +517,7 @@ test('Consolidated fresh-install SQL migration and frontend queries pass securit
   );
   const supabaseInsertSection = createInquiryBlock.slice(
     0,
-    createInquiryBlock.indexOf('if (error) throw new Error(error.message);')
+    createInquiryBlock.indexOf('if (error) throw')
   );
   assert.equal(/\bstatus\s*:/.test(supabaseInsertSection), false);
 

@@ -36,24 +36,28 @@ All property photos (cover photo + additional gallery photos) and documents are 
 
 ## Environment Variables (Cloudflare Pages)
 
-Configure client-safe variables in **Cloudflare Pages → Settings → Variables and Secrets** (copy `.env.example` to `.env` for local Vite work):
+Configure client-safe variables in **Cloudflare Pages → Settings → Variables and Secrets** for **both Production and Preview environments** (copy `.env.example` to `.env` for local Vite work):
 
 ```env
 VITE_SUPABASE_URL="https://your-project-ref.supabase.co"
 VITE_SUPABASE_ANON_KEY="your-supabase-anon-key"
 VITE_PUBLIC_SITE_URL="https://benmicuborealestate.pages.dev"
+VITE_ENABLE_DEMO_MODE="false"
 ```
 
-> **Security:** Never expose Supabase `service_role` keys or server secrets in `VITE_*` variables or client code.
+> **Security & Fail-Closed Behavior:**
+> - Never expose Supabase `service_role` keys or server secrets in `VITE_*` variables or client code.
+> - Production and preview bundles (`vite build`) **never** fall back to fictional demo properties when Supabase is unreachable or env vars are missing. `VITE_ENABLE_DEMO_MODE="true"` works **strictly** during local Vite development (`npm run dev`).
 
 ---
 
 ## Supabase Setup (Manual Review & Execution)
 
 1. Open your Supabase project → **SQL Editor**.
-2. **Fresh installation**: Review and execute `supabase/migrations/20261119_fresh_install.sql` (also mirrored in `supabase/schema.sql`).
-3. **RLS Verification**: Review `supabase/tests/rls_security_regression.sql` inside a rolled-back transaction (`BEGIN; ... ROLLBACK;`) in non-production environments to verify anonymous/non-admin/unpublish protections.
-4. Create an administrator account in **Supabase Authentication → Users** and insert their UUID into `public.admin_users`:
+2. **Existing live databases**: Never rerun `supabase/migrations/20261119_fresh_install.sql` or reset data. Apply only pending incremental migrations (such as `supabase/migrations/20261124_presentations_frontage_price_visibility.sql`).
+3. **Brand-new empty databases only**: Review and execute `supabase/migrations/20261119_fresh_install.sql` (also mirrored in `supabase/schema.sql`).
+4. **RLS Verification**: Review `supabase/tests/rls_security_regression.sql` inside a rolled-back transaction (`BEGIN; ... ROLLBACK;`) in non-production environments to verify anonymous/non-admin/unpublish protections.
+5. Create an administrator account in **Supabase Authentication → Users** and insert their UUID into `public.admin_users`:
    ```sql
    insert into public.admin_users (user_id, email, role, is_active)
    values ('<AUTH_USER_UUID>', 'admin@benmicuborealestate.com', 'super_admin', true);

@@ -22,10 +22,12 @@ import {
   PlusCircle,
   Printer,
   QrCode,
+  RefreshCw,
   RotateCcw,
   Search,
   Send,
   Settings,
+  ShieldAlert,
   ShieldCheck,
   Trash2,
   Video,
@@ -92,11 +94,16 @@ export function AdminDashboardPage() {
     effectiveCanonicalSiteUrl,
     canonicalUrlValidation,
     isDemoMode,
-    isUsingDemoFallback,
+    isServiceUnavailable,
+    isSupabaseConfigured,
     supabaseError,
+    supabaseDiagnostic,
     session,
+    authReady,
     isAdminAuthorized,
     adminRole,
+    adminAuthCheckFailed,
+    refreshAll,
     createProperty,
     updateProperty,
     setPropertyVisibility,
@@ -321,8 +328,57 @@ export function AdminDashboardPage() {
     }
   };
 
-  // Real Supabase Auth Gate when Supabase IS configured and tables are live
-  if (!isDemoMode && !session && !isUsingDemoFallback) {
+  if (!isDemoMode && !authReady) {
+    return (
+      <main className="min-h-[calc(100vh-64px)] bg-[#F8F8FC] flex items-center justify-center px-4 py-12">
+        <div className="w-full max-w-md bg-white border border-[#E6E6EF] rounded-xl p-6 sm:p-8 text-center space-y-3">
+          <div className="w-8 h-8 rounded-full border-2 border-[#6500B5] border-t-transparent animate-spin mx-auto" />
+          <p className="text-xs font-medium text-[#4B4D57]">
+            Verifying administrator session...
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  // Fail closed when live Supabase configuration is missing/invalid (never bypass admin auth)
+  if (!isDemoMode && !isSupabaseConfigured) {
+    return (
+      <main className="min-h-[calc(100vh-64px)] bg-[#F8F8FC] flex items-center justify-center px-4 py-12">
+        <div className="w-full max-w-md bg-white border border-amber-300 rounded-xl p-6 sm:p-8 space-y-4">
+          <div className="flex items-center gap-3 pb-4 border-b border-[#E6E6EF]">
+            <CompanyLogo size="md" />
+            <div>
+              <p className="font-display text-xs font-bold text-[#202124]">
+                BEN MICUBO REAL ESTATE SERVICES
+              </p>
+              <div className="flex items-center gap-1.5 text-xs font-medium text-amber-800 mt-0.5">
+                <Lock className="w-3.5 h-3.5" />
+                <span>Admin Console Locked</span>
+              </div>
+            </div>
+          </div>
+          <h1 className="font-display text-xl font-bold text-[#202124]">
+            Administrator Sign-In Unavailable
+          </h1>
+          <p className="text-xs text-[#4B4D57] leading-relaxed">
+            The live Supabase connection is not configured for this deployment. Administrator authentication cannot be bypassed and write access remains disabled until valid deployment environment variables are configured.
+          </p>
+          <button
+            type="button"
+            onClick={() => void refreshAll()}
+            className="w-full h-10 inline-flex items-center justify-center gap-2 text-xs font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] cursor-pointer"
+          >
+            <RefreshCw className="w-4 h-4" />
+            <span>Retry Check</span>
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  // Real Supabase Auth Gate (never bypassed even if public queries fail)
+  if (!isDemoMode && !session) {
     return (
       <main className="min-h-[calc(100vh-64px)] bg-[#F8F8FC] flex items-center justify-center px-4 py-12">
         <div className="w-full max-w-md bg-white border border-[#E6E6EF] rounded-xl p-6 sm:p-8">
@@ -345,6 +401,12 @@ export function AdminDashboardPage() {
           <p className="mt-1.5 text-sm text-[#4B4D57]">
             Only authorized administrators verified by Supabase Auth and Row-Level Security may modify listings.
           </p>
+
+          {isServiceUnavailable && (
+            <div className="mt-4 p-3 rounded-lg border border-amber-200 bg-amber-50 text-xs text-amber-900">
+              Live listing queries are currently reporting a service interruption. Sign in with your administrator account to view detailed connection diagnostics.
+            </div>
+          )}
 
           <form onSubmit={handleSupabaseLogin} className="mt-6 space-y-4">
             {authError && (
@@ -391,7 +453,7 @@ export function AdminDashboardPage() {
     );
   }
 
-  if (!isDemoMode && session && !isAdminAuthorized && !isUsingDemoFallback) {
+  if (!isDemoMode && session && !isAdminAuthorized) {
     return (
       <main className="min-h-[calc(100vh-64px)] bg-[#F8F8FC] flex items-center justify-center px-4 py-12">
         <div className="w-full max-w-md bg-white border border-red-200 rounded-xl p-6 sm:p-8 space-y-4">
@@ -402,24 +464,49 @@ export function AdminDashboardPage() {
                 BEN MICUBO REAL ESTATE SERVICES
               </p>
               <p className="text-xs font-medium text-red-700 mt-0.5">
-                Unauthorized Administrator Account
+                {adminAuthCheckFailed
+                  ? 'Administrator Verification Unavailable'
+                  : 'Unauthorized Administrator Account'}
               </p>
             </div>
           </div>
           <h1 className="font-display text-xl font-bold text-[#202124]">
-            Admin Role Required
+            {adminAuthCheckFailed
+              ? 'Unable to Verify Admin Role'
+              : 'Admin Role Required'}
           </h1>
           <p className="text-xs text-[#4B4D57] leading-relaxed">
-            Signed in as <code className="font-mono">{session.user.email}</code>, but this account does not have an active record in <code className="font-mono">public.admin_users</code>. Row-Level Security blocks write access.
+            {adminAuthCheckFailed ? (
+              <>
+                Signed in as <code className="font-mono">{session.user.email}</code>, but{' '}
+                <code className="font-mono">public.admin_users</code> could not be queried because Supabase is temporarily unreachable. Administrator access remains locked for security.
+              </>
+            ) : (
+              <>
+                Signed in as <code className="font-mono">{session.user.email}</code>, but this account does not have an active record in <code className="font-mono">public.admin_users</code>. Row-Level Security blocks write access.
+              </>
+            )}
           </p>
-          <button
-            type="button"
-            onClick={() => void signOutSupabase()}
-            className="w-full h-10 inline-flex items-center justify-center gap-2 text-xs font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] cursor-pointer"
-          >
-            <LogOut className="w-4 h-4" />
-            <span>Sign Out</span>
-          </button>
+          <div className="flex flex-col gap-2">
+            {adminAuthCheckFailed && (
+              <button
+                type="button"
+                onClick={() => void refreshAll()}
+                className="w-full h-10 inline-flex items-center justify-center gap-2 text-xs font-medium text-[#202124] bg-[#F8F8FC] border border-[#D6D6E4] rounded-lg hover:bg-white cursor-pointer"
+              >
+                <RefreshCw className="w-4 h-4" />
+                <span>Retry Verification</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => void signOutSupabase()}
+              className="w-full h-10 inline-flex items-center justify-center gap-2 text-xs font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] cursor-pointer"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Sign Out</span>
+            </button>
+          </div>
         </div>
       </main>
     );
@@ -483,46 +570,26 @@ export function AdminDashboardPage() {
 
   return (
     <main className="min-h-[calc(100vh-64px)] bg-[#F8F8FC] pb-16">
-      {/* Stage 1 Demo / Supabase Session Strip */}
+      {/* Explicit Local Dev Demo / Verified Supabase Admin Session Strip */}
       {isDemoMode ? (
         <div className="bg-[#F3EEFA] border-b border-[#DCD0F0]">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs text-[#311A4D]">
             <p>
-              <span className="font-semibold">
-                {isUsingDemoFallback ? 'Stage 2 Fallback (Demo Mode):' : 'Stage 2 Local Workspace (Demo Mode):'}
-              </span>{' '}
-              {isUsingDemoFallback && supabaseError ? (
-                <>
-                  Supabase query failed ({supabaseError}). Showing sample data until{' '}
-                  <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">
-                    supabase/migrations/20261118_stage2_property_management.sql
-                  </code>{' '}
-                  is applied.
-                </>
-              ) : (
-                <>
-                  Edits persist in browser local storage. Configure{' '}
-                  <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">VITE_SUPABASE_URL</code> and{' '}
-                  <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">VITE_SUPABASE_ANON_KEY</code>{' '}
-                  for live Supabase persistence;{' '}
-                  <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">VITE_PUBLIC_SITE_URL</code>{' '}
-                  is optional in dev/preview (required only for distributable QR codes &amp; signage).
-                </>
-              )}
+              <span className="font-semibold">Local Development Demo Mode:</span> Edits persist in browser local storage because{' '}
+              <code className="font-mono bg-white/80 px-1.5 py-0.5 rounded">VITE_ENABLE_DEMO_MODE=true</code>{' '}
+              is set in local dev. Disabled automatically in all production and preview builds.
             </p>
-            {!isUsingDemoFallback && (
-              <button
-                type="button"
-                onClick={() => {
-                  resetDemoData();
-                  showToast('Restored initial Philippine demo listings and inquiries.');
-                }}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-[#DCD0F0] rounded-md font-medium text-[#202124] hover:bg-[#F8F8FC] whitespace-nowrap shrink-0 cursor-pointer self-start md:self-auto"
-              >
-                <RotateCcw className="w-3.5 h-3.5 text-[#6500B5]" />
-                <span>Reset Demo Data</span>
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={() => {
+                resetDemoData();
+                showToast('Restored initial Philippine demo listings and inquiries.');
+              }}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-white border border-[#DCD0F0] rounded-md font-medium text-[#202124] hover:bg-[#F8F8FC] whitespace-nowrap shrink-0 cursor-pointer self-start md:self-auto"
+            >
+              <RotateCcw className="w-3.5 h-3.5 text-[#6500B5]" />
+              <span>Reset Demo Data</span>
+            </button>
           </div>
         </div>
       ) : (
@@ -542,6 +609,95 @@ export function AdminDashboardPage() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* Credential-Free Diagnostics Panel (Authorized Administrators Only) */}
+      {!isDemoMode && (isServiceUnavailable || supabaseDiagnostic) && (
+        <section
+          aria-label="Supabase connection diagnostics"
+          className="max-w-7xl mx-auto px-4 sm:px-6 pt-5"
+        >
+          <div className="p-5 rounded-xl border border-amber-300 bg-amber-50 space-y-3 text-xs text-amber-950">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+              <div className="flex items-start gap-2.5">
+                <ShieldAlert className="w-5 h-5 text-amber-800 shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-display text-sm font-bold text-amber-950">
+                    {isServiceUnavailable
+                      ? 'Supabase Connection / Schema Diagnostics (Service Unavailable)'
+                      : 'Supabase Query Warning'}
+                  </p>
+                  <p className="mt-0.5 text-amber-900">
+                    No fictional demo listings are shown. Existing Supabase properties, photos, documents, videos, and admin accounts remain preserved.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => void refreshAll()}
+                className="inline-flex items-center gap-1.5 h-9 px-3.5 bg-amber-900 text-white rounded-lg font-medium hover:bg-amber-950 whitespace-nowrap shrink-0 cursor-pointer self-start sm:self-auto"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Retry Connection</span>
+              </button>
+            </div>
+
+            <dl className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 bg-white/80 border border-amber-200 rounded-lg p-3.5">
+              <div>
+                <dt className="text-[10px] uppercase tracking-wider text-amber-800">Supabase Host</dt>
+                <dd className="mt-0.5 font-mono font-semibold text-[#202124] break-all">
+                  {supabaseDiagnostic?.supabaseHost || 'Not configured'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-wider text-amber-800">Failure Category</dt>
+                <dd className="mt-0.5 font-mono font-semibold text-[#202124]">
+                  {supabaseDiagnostic?.category || 'unknown'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-wider text-amber-800">Failing Operation</dt>
+                <dd className="mt-0.5 font-mono text-[#202124] break-all">
+                  {supabaseDiagnostic?.operation || 'supabase.query'}
+                </dd>
+              </div>
+              <div>
+                <dt className="text-[10px] uppercase tracking-wider text-amber-800">Error Code</dt>
+                <dd className="mt-0.5 font-mono font-semibold text-[#202124]">
+                  {supabaseDiagnostic?.errorCode || '—'}
+                </dd>
+              </div>
+            </dl>
+
+            <div className="space-y-1.5 bg-white/80 border border-amber-200 rounded-lg p-3.5">
+              <p className="font-semibold text-[#202124]">
+                Sanitized Error:{' '}
+                <span className="font-mono font-normal text-red-900">
+                  {supabaseDiagnostic?.sanitizedMessage || supabaseError || 'Unknown error'}
+                </span>
+              </p>
+              <p className="text-[#4B4D57]">
+                <strong>Recommended Action:</strong>{' '}
+                {supabaseDiagnostic?.recommendedAction ||
+                  'Review pending incremental migrations and verify deployment environment configuration.'}
+              </p>
+              {supabaseDiagnostic?.pendingMigrations &&
+                supabaseDiagnostic.pendingMigrations.length > 0 && (
+                  <p className="text-[#202124]">
+                    <strong>Pending Incremental Migration(s):</strong>{' '}
+                    {supabaseDiagnostic.pendingMigrations.map((mig) => (
+                      <code
+                        key={mig}
+                        className="font-mono bg-amber-100 px-1.5 py-0.5 rounded mr-1.5"
+                      >
+                        {mig}
+                      </code>
+                    ))}
+                  </p>
+                )}
+            </div>
+          </div>
+        </section>
       )}
 
       <div className="max-w-7xl mx-auto px-4 sm:px-6 pt-6">

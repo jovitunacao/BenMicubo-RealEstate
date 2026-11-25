@@ -1,14 +1,15 @@
 import React, {createContext, useCallback, useContext, useEffect, useState} from 'react';
 import type {Session} from '@supabase/supabase-js';
+import {DEFAULT_SITE_SETTINGS} from '../data/demoProperties';
 import {
-  DEFAULT_SITE_SETTINGS,
-  DEMO_INQUIRIES,
-  DEMO_PROPERTIES,
-} from '../data/demoProperties';
-import {isSupabaseConfigured, supabase} from '../lib/supabase';
+  isExplicitDemoMode,
+  isSupabaseConfigured,
+  supabase,
+  supabaseEnvironment,
+} from '../lib/supabase';
+import type {SupabaseDiagnosticInfo} from '../lib/supabaseDiagnostics';
 import {
   isPropertyPubliclyVisible,
-  normalizeProperty,
   propertyService,
   validatePropertyForPublish,
 } from '../services/propertyService';
@@ -25,6 +26,7 @@ import {
   getEffectiveCanonicalSiteUrl,
   validateCanonicalSiteUrl,
 } from '../utils/siteUrl';
+import {loadStoreSnapshot} from './storeLoader';
 
 interface PropertyStoreValue {
   properties: Property[];
@@ -38,11 +40,15 @@ interface PropertyStoreValue {
   isLoading: boolean;
   isDemoMode: boolean;
   isUsingDemoFallback: boolean;
+  isServiceUnavailable: boolean;
+  isSupabaseConfigured: boolean;
   supabaseError: string | null;
+  supabaseDiagnostic: SupabaseDiagnosticInfo | null;
   session: Session | null;
   authReady: boolean;
   isAdminAuthorized: boolean;
   adminRole: 'admin' | 'super_admin' | null;
+  adminAuthCheckFailed: boolean;
   refreshAll: () => Promise<void>;
   getByLotId: (lotId: string) => Property | undefined;
   createProperty: (input: PropertyInput) => Promise<Property>;
@@ -70,13 +76,17 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
   const [siteSettings, setSiteSettings] = useState<SiteSettings>(DEFAULT_SITE_SETTINGS);
   const [isLoading, setIsLoading] = useState(true);
   const [session, setSession] = useState<Session | null>(null);
-  const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
-  const [isAdminAuthorized, setIsAdminAuthorized] = useState(!isSupabaseConfigured);
+  const [authReady, setAuthReady] = useState(!isSupabaseConfigured || isExplicitDemoMode);
+  const [isAdminAuthorized, setIsAdminAuthorized] = useState(false);
   const [adminRole, setAdminRole] = useState<'admin' | 'super_admin' | null>(null);
+  const [adminAuthCheckFailed, setAdminAuthCheckFailed] = useState(false);
+  const [isServiceUnavailable, setIsServiceUnavailable] = useState(false);
   const [supabaseError, setSupabaseError] = useState<string | null>(null);
-  const [isUsingDemoFallback, setIsUsingDemoFallback] = useState(false);
+  const [supabaseDiagnostic, setSupabaseDiagnostic] =
+    useState<SupabaseDiagnosticInfo | null>(null);
 
-  const isDemoMode = !isSupabaseConfigured || isUsingDemoFallback;
+  const isDemoMode = isExplicitDemoMode;
+  const isUsingDemoFallback = false;
   const effectiveCanonicalSiteUrl = getEffectiveCanonicalSiteUrl(
     siteSettings.canonicalSiteUrl
   );
@@ -84,65 +94,28 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
 
   const refreshAll = useCallback(async () => {
     setIsLoading(true);
-    setSupabaseError(null);
     try {
-      const settings = await propertyService.getSiteSettings();
-      setSiteSettings(settings);
-
-      if (!isSupabaseConfigured) {
-        setIsAdminAuthorized(true);
-        setAdminRole('admin');
-        const [propsList, inqList] = await Promise.all([
-          propertyService.listProperties(true),
-          propertyService.listInquiries(),
-        ]);
-        setProperties(propsList);
-        setInquiries(inqList);
-        setIsUsingDemoFallback(false);
-        return;
-      }
-
-      let authorizedAdmin = false;
-      let resolvedRole: 'admin' | 'super_admin' | null = null;
-      if (session?.user.id) {
-        const check = await propertyService.checkCurrentUserAdminRole(session.user.id);
-        authorizedAdmin = check.isAuthorized;
-        resolvedRole = check.role;
-      }
-      setIsAdminAuthorized(authorizedAdmin);
-      setAdminRole(resolvedRole);
-
-      const propsList = await propertyService.listProperties(authorizedAdmin);
-      setProperties(propsList);
-      setIsUsingDemoFallback(false);
-
-      if (authorizedAdmin) {
-        try {
-          const inqList = await propertyService.listInquiries();
-          setInquiries(inqList);
-        } catch (inqErr) {
-          setInquiries([]);
-          setSupabaseError(
-            inqErr instanceof Error ? inqErr.message : 'Unable to load inquiries from Supabase.'
-          );
-        }
-      } else {
-        setInquiries([]);
-      }
-    } catch (err) {
-      const message =
-        err instanceof Error ? err.message : 'Unable to connect to Supabase tables.';
-      setSupabaseError(message);
-      setIsUsingDemoFallback(true);
-      setProperties(DEMO_PROPERTIES.map((p) => normalizeProperty(p)));
-      setInquiries(DEMO_INQUIRIES);
+      const snapshot = await loadStoreSnapshot({
+        env: supabaseEnvironment,
+        sessionUserId: session?.user.id ?? null,
+        service: propertyService,
+      });
+      setSiteSettings(snapshot.siteSettings);
+      setProperties(snapshot.properties);
+      setInquiries(snapshot.inquiries);
+      setIsAdminAuthorized(snapshot.isAdminAuthorized);
+      setAdminRole(snapshot.adminRole);
+      setAdminAuthCheckFailed(snapshot.adminAuthCheckFailed);
+      setIsServiceUnavailable(snapshot.isServiceUnavailable);
+      setSupabaseError(snapshot.supabaseError);
+      setSupabaseDiagnostic(snapshot.supabaseDiagnostic);
     } finally {
       setIsLoading(false);
     }
   }, [session]);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !supabase) {
+    if (isExplicitDemoMode || !isSupabaseConfigured || !supabase) {
       setAuthReady(true);
       return;
     }
@@ -187,13 +160,17 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
     [properties]
   );
 
+  const assertDatabaseWritable = useCallback(() => {
+    if (!isDemoMode && isServiceUnavailable) {
+      throw new Error(
+        'Database connection is currently unavailable. Check Supabase diagnostics and retry before making changes.'
+      );
+    }
+  }, [isDemoMode, isServiceUnavailable]);
+
   const createProperty = useCallback(
     async (input: PropertyInput) => {
-      if (isUsingDemoFallback) {
-        throw new Error(
-          'Supabase database is not ready yet. Apply supabase/migrations/20261118_stage2_property_management.sql first.'
-        );
-      }
+      assertDatabaseWritable();
       if (input.visibility === 'Published') {
         const errors = validatePropertyForPublish(input, siteSettings.canonicalSiteUrl);
         if (errors.length > 0) {
@@ -204,16 +181,12 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
       setProperties((prev) => [created, ...prev]);
       return created;
     },
-    [isUsingDemoFallback, siteSettings.canonicalSiteUrl]
+    [assertDatabaseWritable, siteSettings.canonicalSiteUrl]
   );
 
   const updateProperty = useCallback(
     async (id: string, input: PropertyInput) => {
-      if (isUsingDemoFallback) {
-        throw new Error(
-          'Supabase database is not ready yet. Apply the Stage 2 migration SQL first.'
-        );
-      }
+      assertDatabaseWritable();
       if (input.visibility === 'Published') {
         const errors = validatePropertyForPublish(input, siteSettings.canonicalSiteUrl);
         if (errors.length > 0) {
@@ -224,14 +197,12 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
       setProperties((prev) => prev.map((p) => (p.id === id ? updated : p)));
       return updated;
     },
-    [isUsingDemoFallback, siteSettings.canonicalSiteUrl]
+    [assertDatabaseWritable, siteSettings.canonicalSiteUrl]
   );
 
   const setPropertyVisibility = useCallback(
     async (id: string, visibility: PropertyVisibility) => {
-      if (isUsingDemoFallback) {
-        throw new Error('Supabase database is not ready yet.');
-      }
+      assertDatabaseWritable();
       const target = properties.find((p) => p.id === id);
       if (target && visibility === 'Published') {
         const errors = validatePropertyForPublish(target, siteSettings.canonicalSiteUrl);
@@ -258,7 +229,7 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
         )
       );
     },
-    [isUsingDemoFallback, properties, siteSettings.canonicalSiteUrl]
+    [assertDatabaseWritable, properties, siteSettings.canonicalSiteUrl]
   );
 
   const toggleArchiveProperty = useCallback(
@@ -270,9 +241,7 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
 
   const bulkUpdateStatus = useCallback(
     async (ids: string[], status: PropertyStatus) => {
-      if (isUsingDemoFallback) {
-        throw new Error('Supabase database is not ready yet.');
-      }
+      assertDatabaseWritable();
       await propertyService.bulkUpdateStatus(ids, status);
       const idSet = new Set(ids);
       setProperties((prev) =>
@@ -281,14 +250,12 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
         )
       );
     },
-    [isUsingDemoFallback]
+    [assertDatabaseWritable]
   );
 
   const bulkUpdateVisibility = useCallback(
     async (ids: string[], visibility: PropertyVisibility) => {
-      if (isUsingDemoFallback) {
-        throw new Error('Supabase database is not ready yet.');
-      }
+      assertDatabaseWritable();
       if (visibility === 'Published') {
         for (const id of ids) {
           const item = properties.find((p) => p.id === id);
@@ -311,72 +278,64 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
         )
       );
     },
-    [isUsingDemoFallback, properties]
+    [assertDatabaseWritable, properties]
   );
 
   const deleteProperty = useCallback(
     async (id: string) => {
-      if (isUsingDemoFallback) {
-        throw new Error('Supabase database is not ready yet.');
-      }
+      assertDatabaseWritable();
       await propertyService.deleteProperty(id);
       setProperties((prev) => prev.filter((p) => p.id !== id));
     },
-    [isUsingDemoFallback]
+    [assertDatabaseWritable]
   );
 
   const submitInquiry = useCallback(
     async (payload: Omit<BuyerInquiry, 'id' | 'status' | 'createdAt'>) => {
-      if (isUsingDemoFallback) {
-        const localDemo: BuyerInquiry = {
-          ...payload,
-          id: `inq-fallback-${Date.now()}`,
-          status: 'New',
-          createdAt: new Date().toISOString(),
-        };
-        setInquiries((prev) => [localDemo, ...prev]);
-        return localDemo;
+      if (!isDemoMode && isServiceUnavailable) {
+        throw new Error(
+          'Online inquiry submission is temporarily unavailable while the database reconnects. Please try again shortly.'
+        );
       }
       const created = await propertyService.createInquiry(payload);
       setInquiries((prev) => [created, ...prev]);
       return created;
     },
-    [isUsingDemoFallback]
+    [isDemoMode, isServiceUnavailable]
   );
 
   const updateInquiryStatus = useCallback(
     async (id: string, status: InquiryStatus) => {
-      if (isUsingDemoFallback) {
-        setInquiries((prev) =>
-          prev.map((item) => (item.id === id ? {...item, status} : item))
-        );
-        return;
-      }
+      assertDatabaseWritable();
       await propertyService.updateInquiryStatus(id, status);
       setInquiries((prev) =>
         prev.map((item) => (item.id === id ? {...item, status} : item))
       );
     },
-    [isUsingDemoFallback]
+    [assertDatabaseWritable]
   );
 
   const saveSiteSettings = useCallback(
     async (settings: SiteSettings) => {
+      assertDatabaseWritable();
       const saved = await propertyService.saveSiteSettings(settings);
       setSiteSettings(saved);
     },
-    []
+    [assertDatabaseWritable]
   );
 
   const resetDemoData = useCallback(() => {
+    if (!isDemoMode) return;
     const reset = propertyService.resetDemoData();
     setProperties(reset.properties);
     setInquiries(reset.inquiries);
-  }, []);
+  }, [isDemoMode]);
 
   const signInWithSupabase = useCallback(async (email: string, password: string) => {
     if (!supabase) {
-      throw new Error('Supabase is not configured in this Stage 1 Demo environment.');
+      throw new Error(
+        'Administrator authentication is unavailable because Supabase is not configured for this environment.'
+      );
     }
     const {error} = await supabase.auth.signInWithPassword({email, password});
     if (error) throw new Error(error.message);
@@ -401,11 +360,15 @@ export function PropertyStoreProvider({children}: {children: React.ReactNode}) {
         isLoading,
         isDemoMode,
         isUsingDemoFallback,
+        isServiceUnavailable,
+        isSupabaseConfigured,
         supabaseError,
+        supabaseDiagnostic,
         session,
         authReady,
         isAdminAuthorized,
         adminRole,
+        adminAuthCheckFailed,
         refreshAll,
         getByLotId,
         createProperty,

@@ -1,6 +1,6 @@
 import {useMemo, useState} from 'react';
 import {Link} from 'react-router-dom';
-import {ArrowRight, MapPin, QrCode, Search, SlidersHorizontal} from 'lucide-react';
+import {AlertTriangle, ArrowRight, MapPin, QrCode, RefreshCw, Search, SlidersHorizontal} from 'lucide-react';
 import {usePropertyStore} from '../context/PropertyStoreContext';
 import {CompanyLogo} from '../components/CompanyLogo';
 import {PropertyCard} from '../components/PropertyCard';
@@ -23,8 +23,8 @@ export function HomePage() {
     canonicalUrlValidation,
     isLoading,
     isDemoMode,
-    isUsingDemoFallback,
-    supabaseError,
+    isServiceUnavailable,
+    refreshAll,
   } = usePropertyStore();
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -106,10 +106,9 @@ export function HomePage() {
         <div className="bg-[#F8F8FC] border-b border-[#E6E6EF]">
           <div className="max-w-6xl mx-auto px-4 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-[#4B4D57]">
             <p>
-              <span className="font-semibold text-[#202124]">Stage 1 Sample Data:</span>{' '}
-              {isUsingDemoFallback && supabaseError
-                ? `Supabase tables are not ready (${supabaseError}). Temporarily showing Philippine demo listings.`
-                : 'Displaying Philippine demo listings stored in your browser. Ready for Stage 2 Supabase connection.'}
+              <span className="font-semibold text-[#202124]">Local Development Demo Mode:</span>{' '}
+              Displaying sample Philippine listings stored in your browser (explicitly enabled via{' '}
+              <code className="font-mono">VITE_ENABLE_DEMO_MODE=true</code>).
             </p>
             <Link
               to="/admin"
@@ -234,6 +233,24 @@ export function HomePage() {
                     );
                   })()}
                 </Link>
+              ) : isServiceUnavailable && !isLoading ? (
+                <div className="h-full min-h-[260px] border border-[#E6E6EF] rounded-xl bg-[#F8F8FC] p-6 sm:p-8 flex flex-col justify-center items-start gap-3">
+                  <div className="inline-flex items-center gap-2 text-xs font-semibold text-amber-800">
+                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                    <span>Live Listings Temporarily Unavailable</span>
+                  </div>
+                  <p className="text-sm text-[#4B4D57] leading-relaxed">
+                    We are currently unable to reach the live property directory. All existing BEN MICUBO REAL ESTATE SERVICES listings remain preserved—please retry shortly.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => void refreshAll()}
+                    className="inline-flex items-center gap-2 h-9 px-4 text-xs font-medium text-white bg-[#6500B5] rounded-lg hover:bg-[#540098] cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    <span>Retry Connection</span>
+                  </button>
+                </div>
               ) : null}
             </div>
           </div>
@@ -351,6 +368,27 @@ export function HomePage() {
                   className="h-96 rounded-xl border border-[#E6E6EF] bg-[#F8F8FC] animate-pulse"
                 />
               ))}
+            </div>
+          ) : isServiceUnavailable ? (
+            <div
+              role="status"
+              className="mt-4 p-10 rounded-xl border border-amber-200 bg-amber-50/70 text-center"
+            >
+              <AlertTriangle className="w-7 h-7 text-amber-700 mx-auto mb-3" />
+              <h3 className="font-display text-lg font-semibold text-[#202124]">
+                Property Listings Temporarily Unavailable
+              </h3>
+              <p className="mt-1.5 text-sm text-[#4B4D57] max-w-xl mx-auto">
+                We are currently unable to load live property records from the database. Existing property listings, photos, and documents remain safely stored. Please check back or retry in a moment.
+              </p>
+              <button
+                type="button"
+                onClick={() => void refreshAll()}
+                className="mt-4 inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098] cursor-pointer"
+              >
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Retry Connection</span>
+              </button>
             </div>
           ) : filteredProperties.length === 0 ? (
             <div className="mt-4 p-10 rounded-xl border border-[#E6E6EF] bg-[#F8F8FC] text-center">

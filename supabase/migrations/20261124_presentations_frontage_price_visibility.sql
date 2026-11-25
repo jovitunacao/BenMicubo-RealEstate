@@ -187,6 +187,18 @@ $$;
 revoke all on function public.enforce_media_public_scope() from public;
 revoke all on function public.enforce_media_public_scope() from anon, authenticated;
 
+drop trigger if exists trg_enforce_image_public_scope on public.property_images;
+create trigger trg_enforce_image_public_scope
+  before insert or update on public.property_images
+  for each row
+  execute function public.enforce_media_public_scope();
+
+drop trigger if exists trg_enforce_document_public_scope on public.property_documents;
+create trigger trg_enforce_document_public_scope
+  before insert or update on public.property_documents
+  for each row
+  execute function public.enforce_media_public_scope();
+
 drop trigger if exists trg_enforce_presentation_public_scope on public.property_presentations;
 create trigger trg_enforce_presentation_public_scope
   before insert or update on public.property_presentations
@@ -230,6 +242,12 @@ $$;
 
 revoke all on function public.demote_media_on_property_unpublish() from public;
 revoke all on function public.demote_media_on_property_unpublish() from anon, authenticated;
+
+drop trigger if exists trg_demote_media_on_property_unpublish on public.properties;
+create trigger trg_demote_media_on_property_unpublish
+  after update of visibility, is_archived on public.properties
+  for each row
+  execute function public.demote_media_on_property_unpublish();
 
 -- ============================================================================
 -- 4. BACKEND COLUMN-LEVEL PRICE REDACTION & PUBLIC PROJECTION VIEWS
@@ -495,6 +513,9 @@ create policy "Admin full access private media bucket"
     and (storage.foldername(name))[2] in ('images', 'documents', 'presentations')
     and name !~ '(^|/)\.\.(/|$)'
   );
+
+-- Refresh PostgREST schema cache immediately so public views & columns are visible
+notify pgrst, 'reload schema';
 
 -- ============================================================================
 -- ROLLBACK NOTES (Manual Emergency Revert Only — Run Outside Automated Flow)

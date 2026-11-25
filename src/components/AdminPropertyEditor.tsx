@@ -24,7 +24,7 @@ import {
   Video,
   X,
 } from 'lucide-react';
-import {isSupabaseConfigured} from '../lib/supabase';
+import {isExplicitDemoMode} from '../lib/supabase';
 import type {
   DocumentCategory,
   DocumentVisibility,
@@ -2006,7 +2006,7 @@ export function AdminPropertyEditor({
             <strong className="text-[#6500B5]">Upload Photos</strong> above. Photo #1 is always your designated Cover Photo.
           </p>
 
-          {!isSupabaseConfigured && (
+          {isExplicitDemoMode && (
             <div className="flex flex-wrap items-center justify-center gap-1.5 text-[11px] text-[#696B77] pt-2.5">
               <span>Demo preview samples:</span>
               {SAMPLE_IMAGE_CHOICES.slice(0, 4).map((sample) => (

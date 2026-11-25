@@ -1,6 +1,7 @@
 import {lazy, Suspense, useEffect, useRef, useState} from 'react';
 import {Link, useParams, useSearchParams} from 'react-router-dom';
 import {
+  AlertTriangle,
   ArrowLeft,
   Check,
   ChevronLeft,
@@ -15,6 +16,7 @@ import {
   MessageCircle,
   Phone,
   Printer,
+  RefreshCw,
   Send,
   X,
 } from 'lucide-react';
@@ -67,6 +69,8 @@ export function PropertyDetailPage() {
     canonicalUrlValidation,
     isAdminAuthorized,
     isDemoMode,
+    isServiceUnavailable,
+    refreshAll,
   } = usePropertyStore();
   const property = getByLotId(lotId);
 
@@ -110,6 +114,46 @@ export function PropertyDetailPage() {
         <div className="max-w-6xl mx-auto px-4 sm:px-6 py-12">
           <div className="h-8 w-48 bg-[#F4F0E8] border border-[#E2DDD3] animate-pulse mb-6" />
           <div className="aspect-[16/9] w-full bg-[#F4F0E8] border border-[#E2DDD3] animate-pulse" />
+        </div>
+      </main>
+    );
+  }
+
+  if (!property && isServiceUnavailable) {
+    return (
+      <main className="min-h-[calc(100vh-64px)] bg-[#FAF8F4] py-20 px-4 sm:px-6 text-center">
+        <div className="max-w-2xl mx-auto">
+          <AlertTriangle className="w-8 h-8 text-amber-700 mx-auto mb-3" />
+          <p className="font-mono text-xs uppercase tracking-[0.16em] text-[#8A6D3B]">
+            Temporary Service Interruption
+          </p>
+          <h1 className="mt-2 font-editorial text-3xl sm:text-4xl font-semibold text-[#1C1B19]">
+            Property Dossier Temporarily Unavailable
+          </h1>
+          <p className="mt-3 text-sm text-[#6B665E] leading-relaxed">
+            We are temporarily unable to retrieve live details for{' '}
+            <span className="font-mono font-semibold text-[#1C1B19]">
+              {decodeURIComponent(lotId).toUpperCase()}
+            </span>{' '}
+            from the database. Existing property records remain intact—please retry in a moment.
+          </p>
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <button
+              type="button"
+              onClick={() => void refreshAll()}
+              className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-medium text-[#FAF8F4] bg-[#1C1B19] hover:bg-[#35322D] cursor-pointer"
+            >
+              <RefreshCw className="w-4 h-4" />
+              <span>Retry Connection</span>
+            </button>
+            <Link
+              to="/"
+              className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-medium text-[#1C1B19] bg-[#F4F0E8] border border-[#E2DDD3] hover:border-[#B89B6A]"
+            >
+              <ArrowLeft className="w-4 h-4" />
+              <span>Back to Listings</span>
+            </Link>
+          </div>
         </div>
       </main>
     );

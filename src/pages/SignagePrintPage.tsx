@@ -1,6 +1,6 @@
 import {useState} from 'react';
 import {Link, useParams} from 'react-router-dom';
-import {AlertTriangle, ArrowLeft, MapPin, Phone, Printer, Settings} from 'lucide-react';
+import {AlertTriangle, ArrowLeft, MapPin, Phone, Printer, RefreshCw, Settings} from 'lucide-react';
 import {usePropertyStore} from '../context/PropertyStoreContext';
 import {CompanyLogo} from '../components/CompanyLogo';
 import {QRCodeCanvas} from '../components/QRCodeCanvas';
@@ -14,9 +14,55 @@ import {buildDistributableQrUrl} from '../utils/siteUrl';
 
 export function SignagePrintPage() {
   const {lotId = ''} = useParams();
-  const {getByLotId, effectiveCanonicalSiteUrl, canonicalUrlValidation} = usePropertyStore();
+  const {
+    getByLotId,
+    isLoading,
+    isServiceUnavailable,
+    refreshAll,
+    effectiveCanonicalSiteUrl,
+    canonicalUrlValidation,
+  } = usePropertyStore();
   const property = getByLotId(lotId);
   const [showPriceOnSign, setShowPriceOnSign] = useState(false);
+
+  if (isLoading) {
+    return (
+      <main className="max-w-3xl mx-auto px-4 sm:px-6 py-16">
+        <div className="h-96 rounded-2xl border border-[#E6E6EF] bg-[#F8F8FC] animate-pulse" />
+      </main>
+    );
+  }
+
+  if (!property && isServiceUnavailable) {
+    return (
+      <main className="max-w-3xl mx-auto px-4 sm:px-6 py-20 text-center">
+        <AlertTriangle className="w-8 h-8 text-amber-700 mx-auto mb-3" />
+        <h1 className="font-display text-2xl font-bold text-[#202124]">
+          Printable Signage Temporarily Unavailable
+        </h1>
+        <p className="mt-2 text-sm text-[#4B4D57]">
+          Unable to load {decodeURIComponent(lotId).toUpperCase()} because the live database could not be reached.
+        </p>
+        <div className="mt-5 flex flex-wrap justify-center gap-3">
+          <button
+            type="button"
+            onClick={() => void refreshAll()}
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098] cursor-pointer"
+          >
+            <RefreshCw className="w-3.5 h-3.5" />
+            <span>Retry Connection</span>
+          </button>
+          <Link
+            to="/"
+            className="inline-flex items-center gap-2 px-4 py-2 text-xs font-medium text-[#202124] bg-[#F8F8FC] border border-[#D6D6E4] rounded-md"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            <span>Back to Listings</span>
+          </Link>
+        </div>
+      </main>
+    );
+  }
 
   if (!property) {
     return (
