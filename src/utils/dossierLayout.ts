@@ -1,20 +1,25 @@
 import type {
   Property,
   PropertyDocumentItem,
+  PropertyPresentationItem,
   PropertyStatus,
   PropertyVisibility,
 } from '../types/property';
-import {filterPublicDocuments, isPropertyPubliclyVisible} from '../services/propertyService';
+import {
+  filterPublicDocuments,
+  filterPublicPresentations,
+  isPropertyPubliclyVisible,
+} from '../services/propertyService';
 import {
   buildMessengerLink,
   buildWhatsAppLink,
-  computePricePerSqm,
   formatDateShort,
   formatFileSize,
-  formatPhp,
+  formatFrontageLength,
   formatSqm,
   getPropertyPermalink,
-  shouldDisplayLotDimensions,
+  resolvePropertyPricingDisplay,
+  type PropertyPricingDisplay,
 } from './format';
 import {buildPropertyGallerySlides, type GallerySlide} from './gallery';
 import {
@@ -75,6 +80,18 @@ export interface DossierDocumentEntry {
   rawDocument: PropertyDocumentItem;
 }
 
+export interface DossierPresentationEntry {
+  id: string;
+  title: string;
+  description: string;
+  slideCount: number | null;
+  allowDownload: boolean;
+  pdfSizeLabel: string;
+  pptxSizeLabel: string;
+  onlineUrl: string;
+  rawPresentation: PropertyPresentationItem;
+}
+
 export interface DossierVideoEntry {
   id: string;
   title: string;
@@ -97,11 +114,15 @@ export interface DossierModel {
   locationLine: string;
   completeLocation: string;
   regionLine: string;
+  pricing: PropertyPricingDisplay;
   priceTotalLabel: string;
   pricePerSqmLabel: string;
+  priceHeadlineLabel: string;
+  priceSubLabel: string;
+  isPriceUponRequest: boolean;
   isNegotiable: boolean;
   lotAreaLabel: string;
-  dimensionsLabel: string;
+  frontageLengthLabel: string;
   titleStatusLabel: string;
   updatedAtLabel: string;
   executiveMetrics: Array<{label: string; value: string; mono?: boolean}>;
@@ -112,6 +133,7 @@ export interface DossierModel {
   portfolio: DossierPhotoPortfolio;
   specificationLedger: DossierSpecItem[];
   publicDocuments: DossierDocumentEntry[];
+  publicPresentations: DossierPresentationEntry[];
   geolocation: {
     hasValidCoordinates: boolean;
     coordinatesDisplay: string;
@@ -162,7 +184,6 @@ export function formatEditorialParagraphs(rawDescription: string): string[] {
     return [singleBlock];
   }
 
-  // Break very long single-paragraph descriptions at natural sentence boundaries for editorial readability
   const sentences = singleBlock.match(/[^.!?]+[.!?]+(?:\s+|$)|[^.!?]+$/g) || [singleBlock];
   const grouped: string[] = [];
   let buffer = '';
@@ -234,13 +255,12 @@ export function buildPropertyDossierModel(
     };
   }
 
-  // Strictly enforce approved-public-only images on public dossiers
   const slides = buildPropertyGallerySlides(property, {
     isPreviewAllowed: options.isPreviewAllowed,
   });
   const portfolio = resolvePhotoPortfolioLayout(slides);
 
-  // Strictly exclude Private admin documents from all printable / public dossiers
+  // Strictly exclude Private admin documents from all buyer/printable dossiers
   const publicDocuments: DossierDocumentEntry[] = filterPublicDocuments(
     property.documents || []
   ).map((doc) => ({
@@ -252,8 +272,32 @@ export function buildPropertyDossierModel(
     rawDocument: doc,
   }));
 
-  const pricePerSqm =
-    property.pricePerSqm || computePricePerSqm(property.priceTotalPhp, property.lotAreaSqm);
+  const canonicalValidation = validateCanonicalSiteUrl(options.effectiveCanonicalSiteUrl);
+  const qrTargetUrl = canonicalValidation.valid
+    ? buildDistributableQrUrl(options.effectiveCanonicalSiteUrl, property.lotId) || ''
+    : '';
+  const permalinkDisplay =
+    qrTargetUrl || getPropertyPermalink(property.lotId, options.effectiveCanonicalSiteUrl);
+
+  // Strictly exclude Private presentations from dossiers; reference Public decks via link/QR only
+  const publicPresentations: DossierPresentationEntry[] = filterPublicPresentations(
+    property.presentations || []
+  ).map((pres) => ({
+    id: pres.id,
+    title: pres.title,
+    description: pres.description || '',
+    slideCount: pres.slideCount ?? null,
+    allowDownload: Boolean(pres.allowDownload),
+    pdfSizeLabel: pres.pdfFileSizeBytes ? formatFileSize(pres.pdfFileSizeBytes) : '',
+    pptxSizeLabel:
+      pres.allowDownload && pres.pptxFileSizeBytes
+        ? formatFileSize(pres.pptxFileSizeBytes)
+        : '',
+    onlineUrl: qrTargetUrl ? `${qrTargetUrl}#presentations` : `${permalinkDisplay}#presentations`,
+    rawPresentation: pres,
+  }));
+
+  const pricing = resolvePropertyPricingDisplay(property);
   const locationParts = [property.barangay, property.city, property.province]
     .map((s) => (s || '').trim())
     .filter(Boolean);
@@ -266,18 +310,18 @@ export function buildPropertyDossierModel(
   const useCompactTwoColumnNarrative =
     totalDescChars > 950 || descriptionParagraphs.length >= 4;
 
-  const showLotDimensions = shouldDisplayLotDimensions(property);
+  const frontageLengthLabel = formatFrontageLength(property.frontageLengthM);
   const halfWidthSpecs: DossierSpecItem[] = [
     {
       label: 'Lot Area',
       value: formatSqm(property.lotAreaSqm),
       mono: true,
     },
-    ...(showLotDimensions
+    ...(frontageLengthLabel
       ? [
           {
-            label: 'Lot Dimensions',
-            value: property.dimensions.trim(),
+            label: 'Frontage Length',
+            value: frontageLengthLabel,
             mono: true,
           },
         ]
@@ -310,7 +354,7 @@ export function buildPropertyDossierModel(
     },
   ];
 
-  // Auto-balance 2-column grid so hiding Lot Dimensions never leaves an orphan blank cell
+  // Auto-balance 2-column grid so omitting optional Frontage Length never leaves an orphan blank cell
   if (halfWidthSpecs.length % 2 === 1 && halfWidthSpecs.length > 0) {
     halfWidthSpecs[0] = {...halfWidthSpecs[0], fullWidth: true};
   }
@@ -389,13 +433,6 @@ export function buildPropertyDossierModel(
   const agentWhatsapp = (property.agentWhatsapp || '').trim();
   const agentMessenger = (property.agentMessenger || '').trim();
 
-  const canonicalValidation = validateCanonicalSiteUrl(options.effectiveCanonicalSiteUrl);
-  const qrTargetUrl = canonicalValidation.valid
-    ? buildDistributableQrUrl(options.effectiveCanonicalSiteUrl, property.lotId) || ''
-    : '';
-  const permalinkDisplay =
-    qrTargetUrl || getPropertyPermalink(property.lotId, options.effectiveCanonicalSiteUrl);
-
   return {
     accessible: true,
     lotId: property.lotId,
@@ -408,20 +445,24 @@ export function buildPropertyDossierModel(
     locationLine,
     completeLocation,
     regionLine,
-    priceTotalLabel: formatPhp(property.priceTotalPhp),
-    pricePerSqmLabel: `${formatPhp(pricePerSqm)} / sqm`,
+    pricing,
+    priceTotalLabel: pricing.totalPriceLabel,
+    pricePerSqmLabel: pricing.pricePerSqmLabel,
+    priceHeadlineLabel: pricing.primaryHeadlineLabel,
+    priceSubLabel: pricing.secondarySubLabel,
+    isPriceUponRequest: pricing.isPriceUponRequest,
     isNegotiable: property.isNegotiable,
     lotAreaLabel: formatSqm(property.lotAreaSqm),
-    dimensionsLabel: showLotDimensions ? property.dimensions.trim() : '',
+    frontageLengthLabel,
     titleStatusLabel: (property.titleStatus || '').trim() || 'Upon verification',
     updatedAtLabel: formatDateShort(property.updatedAt),
     executiveMetrics: [
       {label: 'Lot Area', value: formatSqm(property.lotAreaSqm), mono: true},
-      ...(showLotDimensions
+      ...(frontageLengthLabel
         ? [
             {
-              label: 'Dimensions',
-              value: property.dimensions.trim(),
+              label: 'Frontage Length',
+              value: frontageLengthLabel,
               mono: true,
             },
           ]
@@ -439,6 +480,7 @@ export function buildPropertyDossierModel(
     portfolio,
     specificationLedger,
     publicDocuments,
+    publicPresentations,
     geolocation: {
       hasValidCoordinates,
       coordinatesDisplay: hasValidCoordinates

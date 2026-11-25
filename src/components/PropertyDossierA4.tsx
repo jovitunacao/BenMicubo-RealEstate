@@ -137,33 +137,44 @@ export function PropertyDossierA4({dossier, onDownloadDocument}: PropertyDossier
             </figcaption>
           </figure>
 
-          {/* Valuation & 4-Metric Executive Strip */}
+          {/* Valuation & Executive Strip */}
           <section className="mt-6 pt-5 border-t border-[#E2DDD3] dossier-avoid-break">
             <div className="flex flex-wrap items-baseline justify-between gap-4 pb-5 border-b border-[#E2DDD3]">
               <div>
                 <p className="text-[10px] tracking-[0.16em] uppercase text-[#6B665E]">
-                  Indicative Selling Price
+                  {dossier.isPriceUponRequest
+                    ? 'Valuation Inquiry'
+                    : dossier.pricing.showSellingPrice
+                      ? 'Indicative Selling Price'
+                      : 'Rate per Square Meter'}
                 </p>
-                <div className="mt-1 flex items-baseline gap-3">
+                <div className="mt-1 flex items-baseline gap-3 flex-wrap">
                   <span className="font-editorial text-3xl sm:text-[34px] font-semibold text-[#1C1B19] tabular-nums">
-                    {dossier.priceTotalLabel}
+                    {dossier.priceHeadlineLabel}
                   </span>
-                  {dossier.isNegotiable && (
+                  {dossier.isNegotiable && !dossier.isPriceUponRequest && (
                     <span className="text-[11px] font-medium tracking-[0.12em] uppercase text-[#8A6D3B]">
                       Negotiable
                     </span>
                   )}
                 </div>
+                {dossier.isPriceUponRequest && (
+                  <p className="mt-1 text-xs text-[#6B665E]">
+                    Direct pricing consultation available upon inquiry.
+                  </p>
+                )}
               </div>
 
-              <div className="sm:text-right">
-                <p className="text-[10px] tracking-[0.16em] uppercase text-[#6B665E]">
-                  Unit Rate
-                </p>
-                <p className="mt-1 font-mono text-base font-medium text-[#1C1B19] tabular-nums">
-                  {dossier.pricePerSqmLabel}
-                </p>
-              </div>
+              {dossier.priceSubLabel && (
+                <div className="sm:text-right">
+                  <p className="text-[10px] tracking-[0.16em] uppercase text-[#6B665E]">
+                    Unit Rate
+                  </p>
+                  <p className="mt-1 font-mono text-base font-medium text-[#1C1B19] tabular-nums">
+                    {dossier.priceSubLabel}
+                  </p>
+                </div>
+              )}
             </div>
 
             <dl
@@ -702,6 +713,35 @@ export function PropertyDossierA4({dossier, onDownloadDocument}: PropertyDossier
               {dossier.qr.permalinkDisplay}
             </p>
           </section>
+
+          {dossier.publicPresentations.length > 0 && (
+            <section className="p-4 border border-[#E2DDD3] bg-[#FAF8F4] dossier-avoid-break">
+              <div className="flex items-baseline justify-between gap-3">
+                <div>
+                  <p className="text-[10px] tracking-[0.16em] uppercase text-[#8A6D3B]">
+                    Interactive Presentation Briefing
+                  </p>
+                  <p className="mt-0.5 text-xs font-semibold text-[#1C1B19]">
+                    {dossier.publicPresentations.length === 1
+                      ? dossier.publicPresentations[0].title
+                      : `${dossier.publicPresentations.length} Approved Public Presentation Decks`}
+                  </p>
+                </div>
+                <span className="font-mono text-[10px] text-[#6B665E] shrink-0">
+                  VIEW VIA QR
+                </span>
+              </div>
+              <p className="mt-1.5 text-[11px] text-[#6B665E] leading-relaxed">
+                Scan the verification QR code above to open the interactive slide viewer online
+                {dossier.publicPresentations.some((p) => p.slideCount)
+                  ? ` (${dossier.publicPresentations
+                      .map((p) => (p.slideCount ? `${p.title}: ${p.slideCount} slides` : p.title))
+                      .join(' · ')})`
+                  : ''}
+                .
+              </p>
+            </section>
+          )}
 
           {/* Assigned Property Advisor */}
           <section className="border-t border-b border-[#E2DDD3] py-6 dossier-avoid-break">

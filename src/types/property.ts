@@ -52,7 +52,37 @@ export interface PropertyDocumentItem {
   mimeType: string;
   fileSizeBytes: number;
   publicUrl?: string;
-  dataUrl?: string; // Stage 1 local demo fallback for browser preview only
+  dataUrl?: string; // Local demo fallback for browser preview only
+  uploadedAt: string;
+}
+
+export type PresentationVisibility = 'Private' | 'Public';
+
+export interface PropertyPresentationItem {
+  id: string;
+  title: string;
+  description: string;
+  visibility: PresentationVisibility;
+  allowDownload: boolean;
+  sortOrder: number;
+  slideCount: number | null;
+  pdfStorageBucket: 'property-media-private' | 'property-media-public';
+  pdfStoragePath: string;
+  pdfFileName: string;
+  pdfMimeType: string;
+  pdfFileSizeBytes: number;
+  pdfPublicUrl?: string;
+  pdfDataUrl?: string; // Local demo fallback only
+  pptxStorageBucket: 'property-media-private' | 'property-media-public';
+  pptxStoragePath: string;
+  pptxFileName: string;
+  pptxMimeType: string;
+  pptxFileSizeBytes: number;
+  pptxPublicUrl?: string;
+  pptxDataUrl?: string; // Local demo fallback only
+  coverStorageBucket: 'property-media-private' | 'property-media-public';
+  coverStoragePath: string;
+  coverPublicUrl?: string;
   uploadedAt: string;
 }
 
@@ -66,11 +96,13 @@ export interface Property {
   region: string;
   completeLocation: string;
   lotAreaSqm: number;
-  dimensions: string;
-  showLotDimensions?: boolean;
+  frontageLengthM: number | null;
+  dimensions?: string; // Legacy column retained non-destructively in DB only; omitted from UI
   boundaryDescription: string;
-  pricePerSqm: number;
-  priceTotalPhp: number;
+  pricePerSqm: number | null;
+  priceTotalPhp: number | null;
+  showSellingPrice: boolean;
+  showPricePerSqm: boolean;
   isPriceManualOverride: boolean;
   isNegotiable: boolean;
   classification: PropertyClassification;
@@ -92,6 +124,7 @@ export interface Property {
   youtubeUrl: string;
   videos: PropertyVideoItem[];
   documents: PropertyDocumentItem[];
+  presentations: PropertyPresentationItem[];
   latitude: number;
   longitude: number;
   googleMapsUrl: string;

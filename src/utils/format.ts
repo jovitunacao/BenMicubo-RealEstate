@@ -1,7 +1,10 @@
 import type {Property} from '../types/property';
 import {buildCanonicalPropertyUrl} from './siteUrl';
 
-export function formatPhp(amount: number): string {
+export function formatPhp(amount: number | null | undefined): string {
+  if (amount === null || amount === undefined || !Number.isFinite(amount)) {
+    return 'Price Upon Request';
+  }
   return new Intl.NumberFormat('en-PH', {
     style: 'currency',
     currency: 'PHP',
@@ -13,8 +16,38 @@ export function formatSqm(sqm: number): string {
   return `${new Intl.NumberFormat('en-PH').format(sqm)} sqm`;
 }
 
-export function computePricePerSqm(totalPrice: number, lotAreaSqm: number): number {
-  if (!lotAreaSqm || lotAreaSqm <= 0) return 0;
+export function formatFrontageLength(meters: number | null | undefined): string {
+  if (meters === null || meters === undefined || !Number.isFinite(meters) || meters <= 0) {
+    return '';
+  }
+  const rounded = Number(meters.toFixed(2));
+  return `${new Intl.NumberFormat('en-PH', {maximumFractionDigits: 2}).format(rounded)} m`;
+}
+
+export function hasVisibleFrontageLength(
+  property: Pick<Property, 'frontageLengthM'>
+): boolean {
+  return (
+    property.frontageLengthM !== null &&
+    property.frontageLengthM !== undefined &&
+    Number.isFinite(property.frontageLengthM) &&
+    property.frontageLengthM > 0
+  );
+}
+
+export function computePricePerSqm(
+  totalPrice: number | null | undefined,
+  lotAreaSqm: number
+): number {
+  if (
+    totalPrice === null ||
+    totalPrice === undefined ||
+    !Number.isFinite(totalPrice) ||
+    !lotAreaSqm ||
+    lotAreaSqm <= 0
+  ) {
+    return 0;
+  }
   return Math.round(totalPrice / lotAreaSqm);
 }
 
@@ -23,13 +56,63 @@ export function computeTotalPrice(lotAreaSqm: number, pricePerSqm: number): numb
   return Math.round(lotAreaSqm * pricePerSqm);
 }
 
-export function shouldDisplayLotDimensions(
-  property: Pick<Property, 'dimensions' | 'showLotDimensions'>
-): boolean {
-  if (property.showLotDimensions === false) {
-    return false;
-  }
-  return Boolean((property.dimensions || '').trim());
+export interface PropertyPricingDisplay {
+  showSellingPrice: boolean;
+  showPricePerSqm: boolean;
+  totalPriceLabel: string;
+  pricePerSqmLabel: string;
+  primaryHeadlineLabel: string;
+  secondarySubLabel: string;
+  isPriceUponRequest: boolean;
+  hasAnyVisiblePrice: boolean;
+}
+
+/**
+ * Resolves public-safe display labels for all four combinations of
+ * `showSellingPrice` and `showPricePerSqm` without deriving or exposing hidden values.
+ */
+export function resolvePropertyPricingDisplay(
+  property: Pick<
+    Property,
+    'priceTotalPhp' | 'pricePerSqm' | 'lotAreaSqm' | 'showSellingPrice' | 'showPricePerSqm'
+  >
+): PropertyPricingDisplay {
+  const showSellingPrice =
+    property.showSellingPrice !== false &&
+    property.priceTotalPhp !== null &&
+    property.priceTotalPhp !== undefined &&
+    Number.isFinite(property.priceTotalPhp);
+
+  const showPricePerSqm =
+    property.showPricePerSqm !== false &&
+    property.pricePerSqm !== null &&
+    property.pricePerSqm !== undefined &&
+    Number.isFinite(property.pricePerSqm);
+
+  const totalPriceLabel = showSellingPrice
+    ? formatPhp(property.priceTotalPhp)
+    : '';
+  const pricePerSqmLabel = showPricePerSqm
+    ? `${formatPhp(property.pricePerSqm)} / sqm`
+    : '';
+
+  const hasAnyVisiblePrice = Boolean(totalPriceLabel || pricePerSqmLabel);
+  const isPriceUponRequest = !hasAnyVisiblePrice;
+
+  const primaryHeadlineLabel = totalPriceLabel || pricePerSqmLabel || 'Price Upon Request';
+  const secondarySubLabel =
+    totalPriceLabel && pricePerSqmLabel ? pricePerSqmLabel : '';
+
+  return {
+    showSellingPrice,
+    showPricePerSqm,
+    totalPriceLabel,
+    pricePerSqmLabel,
+    primaryHeadlineLabel,
+    secondarySubLabel,
+    isPriceUponRequest,
+    hasAnyVisiblePrice,
+  };
 }
 
 export function generateNextLotId(existingProperties: Pick<Property, 'lotId'>[]): string {

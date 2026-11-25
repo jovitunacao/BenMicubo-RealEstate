@@ -171,10 +171,6 @@ export interface MobileDetectionEnvironment {
   userAgentDataMobile?: boolean;
 }
 
-/**
- * Reliable mobile/tablet device detection using UA, iPadOS touch capability,
- * UA-CH mobile hint, and primary coarse pointer — NOT viewport width alone.
- */
 export function detectMobilePlaybackEnvironment(
   env?: MobileDetectionEnvironment
 ): boolean {
@@ -207,7 +203,6 @@ export function detectMobilePlaybackEnvironment(
   }
 
   const touchPoints = resolved.maxTouchPoints ?? 0;
-  // iPadOS Safari ("Request Desktop Website") reports Macintosh / MacIntel with multi-touch
   if ((/Macintosh/i.test(ua) || resolved.platform === 'MacIntel') && touchPoints > 1) {
     return true;
   }
@@ -219,12 +214,13 @@ export function detectMobilePlaybackEnvironment(
   return false;
 }
 
+/**
+ * Keep both Google Drive and YouTube embedded in-page on mobile and desktop
+ * (poster-first until user taps Play, never auto-redirecting visitors away).
+ */
 export function resolveVideoRenderMode(
-  provider: VideoProvider,
-  isMobileDevice: boolean
-): 'mobile_external_card' | 'inline_embed' {
-  if (provider === 'google_drive' && isMobileDevice) {
-    return 'mobile_external_card';
-  }
+  _provider: VideoProvider,
+  _isMobileDevice: boolean
+): 'inline_embed' {
   return 'inline_embed';
 }

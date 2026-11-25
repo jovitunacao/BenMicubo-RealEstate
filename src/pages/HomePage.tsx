@@ -8,7 +8,7 @@ import {PropertyImage} from '../components/PropertyImage';
 import {QRCodeCanvas} from '../components/QRCodeCanvas';
 import {InquiryForm} from '../components/InquiryForm';
 import {StatusIndicator} from '../components/StatusIndicator';
-import {computePricePerSqm, formatPhp, formatSqm} from '../utils/format';
+import {formatSqm, resolvePropertyPricingDisplay} from '../utils/format';
 import {buildDistributableQrUrl} from '../utils/siteUrl';
 import type {PropertyClassification, PropertyStatus} from '../types/property';
 
@@ -59,8 +59,16 @@ export function HomePage() {
     });
 
     return [...list].sort((a, b) => {
-      if (sortBy === 'price-asc') return a.priceTotalPhp - b.priceTotalPhp;
-      if (sortBy === 'price-desc') return b.priceTotalPhp - a.priceTotalPhp;
+      if (sortBy === 'price-asc' || sortBy === 'price-desc') {
+        const aVisible = a.showSellingPrice !== false && a.priceTotalPhp !== null && Number.isFinite(a.priceTotalPhp);
+        const bVisible = b.showSellingPrice !== false && b.priceTotalPhp !== null && Number.isFinite(b.priceTotalPhp);
+        if (aVisible && !bVisible) return -1;
+        if (!aVisible && bVisible) return 1;
+        if (!aVisible && !bVisible) return a.lotId.localeCompare(b.lotId);
+        return sortBy === 'price-asc'
+          ? (a.priceTotalPhp as number) - (b.priceTotalPhp as number)
+          : (b.priceTotalPhp as number) - (a.priceTotalPhp as number);
+      }
       if (sortBy === 'area-desc') return b.lotAreaSqm - a.lotAreaSqm;
       return a.lotId.localeCompare(b.lotId);
     });
@@ -129,7 +137,7 @@ export function HomePage() {
                   Verified Philippine lots with instant QR property dossiers.
                 </h1>
                 <p className="mt-4 text-base text-[#4B4D57] leading-relaxed max-w-xl">
-                  Scan any on-site signage board or browse below for verified titles, lot dimensions, drone walkthroughs, and pinned Google Maps coordinates across Luzon and Visayas.
+                  Scan any on-site signage board or browse below for verified titles, land area specifications, drone walkthroughs, and pinned Google Maps coordinates across Luzon and Visayas.
                 </p>
               </div>
 
@@ -199,31 +207,32 @@ export function HomePage() {
                       </p>
                     </div>
                   </div>
-                  <div className="p-4 sm:p-5 bg-white flex items-center justify-between gap-4">
-                    <div className="min-w-0">
-                      <h2 className="font-display text-base sm:text-lg font-semibold text-[#202124] truncate">
-                        {featuredProperty.title}
-                      </h2>
-                      <p className="text-xs text-[#4B4D57] mt-0.5 tabular-nums">
-                        {formatSqm(featuredProperty.lotAreaSqm)} · {featuredProperty.classification} ·{' '}
-                        {formatPhp(
-                          computePricePerSqm(
-                            featuredProperty.priceTotalPhp,
-                            featuredProperty.lotAreaSqm
-                          )
-                        )}{' '}
-                        / sqm
-                      </p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="font-display text-base sm:text-lg font-bold text-[#202124] tabular-nums">
-                        {formatPhp(featuredProperty.priceTotalPhp)}
-                      </p>
-                      <span className="inline-flex items-center gap-1 text-xs font-medium text-[#6500B5]">
-                        Open Dossier <ArrowRight className="w-3.5 h-3.5" />
-                      </span>
-                    </div>
-                  </div>
+                  {(() => {
+                    const featuredPricing = resolvePropertyPricingDisplay(featuredProperty);
+                    return (
+                      <div className="p-4 sm:p-5 bg-white flex items-center justify-between gap-4">
+                        <div className="min-w-0">
+                          <h2 className="font-display text-base sm:text-lg font-semibold text-[#202124] truncate">
+                            {featuredProperty.title}
+                          </h2>
+                          <p className="text-xs text-[#4B4D57] mt-0.5 tabular-nums">
+                            {formatSqm(featuredProperty.lotAreaSqm)} · {featuredProperty.classification}
+                            {featuredPricing.secondarySubLabel
+                              ? ` · ${featuredPricing.secondarySubLabel}`
+                              : ''}
+                          </p>
+                        </div>
+                        <div className="text-right shrink-0">
+                          <p className="font-display text-base sm:text-lg font-bold text-[#202124] tabular-nums">
+                            {featuredPricing.primaryHeadlineLabel}
+                          </p>
+                          <span className="inline-flex items-center gap-1 text-xs font-medium text-[#6500B5]">
+                            Open Dossier <ArrowRight className="w-3.5 h-3.5" />
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
                 </Link>
               ) : null}
             </div>
@@ -401,7 +410,7 @@ export function HomePage() {
                   02. Mobile-First Buyer Experience
                 </h3>
                 <p className="mt-1 text-sm text-[#4B4D57] leading-relaxed">
-                  Scanning from a phone opens photos, lot dimensions, road access, lazy-loaded YouTube and Google Drive drone footage, Google Maps pin links, and one-tap WhatsApp or Messenger contact.
+                  Scanning from a phone opens photos, land area and frontage details, road access, lazy-loaded YouTube and Google Drive drone footage, Google Maps pin links, and one-tap WhatsApp or Messenger contact.
                 </p>
               </div>
               <div className="pt-4 border-t border-[#E6E6EF]">

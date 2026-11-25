@@ -1,7 +1,7 @@
 -- BEN MICUBO REAL ESTATE SERVICES
--- Consolidated & Hardened Fresh-Install Schema, RLS Policies, Triggers & Storage
--- Synchronized with supabase/migrations/20261119_fresh_install.sql
--- IMPORTANT: Review carefully and apply manually in Supabase SQL Editor.
+-- Consolidated Full Schema Mirror (PostgreSQL, Views, RLS Policies, Triggers & Storage)
+-- Reflects 20261119_fresh_install.sql + 20261124_presentations_frontage_price_visibility.sql.
+-- IMPORTANT: For existing live databases, apply ONLY incremental migrations in supabase/migrations/ manually in Supabase SQL Editor.
 
 create extension if not exists "pgcrypto";
 
@@ -54,7 +54,7 @@ create table if not exists public.site_settings (
 );
 
 -- ============================================================================
--- 3. PROPERTIES, MEDIA & DOCUMENTS
+-- 3. PROPERTIES, MEDIA, DOCUMENTS & PRESENTATIONS
 -- ============================================================================
 
 create table if not exists public.properties (
@@ -67,11 +67,14 @@ create table if not exists public.properties (
   region text not null default '',
   complete_location text not null default '',
   lot_area_sqm numeric not null check (lot_area_sqm > 0),
+  frontage_length_m numeric null check (frontage_length_m is null or frontage_length_m > 0),
   dimensions text not null default '',
   show_lot_dimensions boolean not null default true,
   boundary_description text not null default '',
   price_per_sqm numeric not null default 0 check (price_per_sqm >= 0),
   price_total_php numeric not null check (price_total_php >= 0),
+  show_selling_price boolean not null default true,
+  show_price_per_sqm boolean not null default true,
   is_price_manual_override boolean not null default false,
   is_negotiable boolean not null default false,
   classification text not null check (
@@ -118,6 +121,44 @@ create table if not exists public.properties (
     )
   )
 );
+
+create or replace function public.is_published_property(target_property_id uuid)
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select exists (
+    select 1
+    from public.properties p
+    where p.id = target_property_id
+      and p.visibility = 'Published'
+      and p.is_archived = false
+  );
+$$;
+
+revoke all on function public.is_published_property(uuid) from public;
+grant execute on function public.is_published_property(uuid) to anon, authenticated, service_role;
+
+create or replace function public.is_published_property_lot(target_lot_id text)
+returns boolean
+language sql
+stable
+security definer
+set search_path = pg_catalog, public
+as $$
+  select exists (
+    select 1
+    from public.properties p
+    where p.lot_id = target_lot_id
+      and p.visibility = 'Published'
+      and p.is_archived = false
+  );
+$$;
+
+revoke all on function public.is_published_property_lot(text) from public;
+grant execute on function public.is_published_property_lot(text) to anon, authenticated, service_role;
 
 create table if not exists public.property_images (
   id uuid primary key default gen_random_uuid(),
@@ -174,6 +215,65 @@ create table if not exists public.property_documents (
   )
 );
 
+create table if not exists public.property_presentations (
+  id uuid primary key default gen_random_uuid(),
+  property_id uuid not null references public.properties(id) on delete cascade,
+  title text not null check (char_length(trim(title)) >= 1 and char_length(title) <= 200),
+  description text not null default '',
+  visibility text not null default 'Private' check (visibility in ('Private', 'Public')),
+  allow_download boolean not null default false,
+  sort_order integer not null default 0 check (sort_order >= 0),
+  slide_count integer null check (slide_count is null or slide_count >= 0),
+  pdf_storage_bucket text not null default 'property-media-private' check (
+    pdf_storage_bucket in ('property-media-private', 'property-media-public')
+  ),
+  pdf_storage_path text not null default '',
+  pdf_file_name text not null default '',
+  pdf_mime_type text not null default '',
+  pdf_file_size_bytes bigint not null default 0 check (
+    pdf_file_size_bytes >= 0 and pdf_file_size_bytes <= 20971520
+  ),
+  pptx_storage_bucket text not null default 'property-media-private' check (
+    pptx_storage_bucket in ('property-media-private', 'property-media-public')
+  ),
+  pptx_storage_path text not null default '',
+  pptx_file_name text not null default '',
+  pptx_mime_type text not null default '',
+  pptx_file_size_bytes bigint not null default 0 check (
+    pptx_file_size_bytes >= 0 and pptx_file_size_bytes <= 26214400
+  ),
+  cover_storage_bucket text not null default 'property-media-private' check (
+    cover_storage_bucket in ('property-media-private', 'property-media-public')
+  ),
+  cover_storage_path text not null default '',
+  cover_public_url text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  constraint property_presentations_at_least_one_file_check check (
+    nullif(trim(pdf_storage_path), '') is not null
+    or nullif(trim(pptx_storage_path), '') is not null
+  ),
+  constraint property_presentations_safe_paths_check check (
+    pdf_storage_path !~ '(^|/)\.\.(/|$)'
+    and pptx_storage_path !~ '(^|/)\.\.(/|$)'
+    and cover_storage_path !~ '(^|/)\.\.(/|$)'
+  ),
+  constraint property_presentations_bucket_visibility_check check (
+    (
+      visibility = 'Public'
+      or (
+        pdf_storage_bucket = 'property-media-private'
+        and pptx_storage_bucket = 'property-media-private'
+        and cover_storage_bucket = 'property-media-private'
+      )
+    )
+    and (
+      allow_download = true
+      or pptx_storage_bucket = 'property-media-private'
+    )
+  )
+);
+
 -- Enforce that public Storage bucket rows only belong to Published, non-archived properties
 create or replace function public.enforce_media_public_scope()
 returns trigger
@@ -201,6 +301,25 @@ begin
     if new.storage_bucket = 'property-media-public' and coalesce(prop_published, false) is false then
       raise exception 'SECURITY VIOLATION: Unpublished property documents cannot target property-media-public';
     end if;
+  elsif tg_table_name = 'property_presentations' then
+    if new.visibility = 'Private' and (
+      new.pdf_storage_bucket <> 'property-media-private'
+      or new.pptx_storage_bucket <> 'property-media-private'
+      or new.cover_storage_bucket <> 'property-media-private'
+    ) then
+      raise exception 'SECURITY VIOLATION: Private presentations must always target property-media-private';
+    end if;
+    if (new.allow_download = false or new.visibility <> 'Public')
+       and new.pptx_storage_bucket <> 'property-media-private' then
+      raise exception 'SECURITY VIOLATION: PPTX files cannot target property-media-public unless visibility is Public and downloads are enabled';
+    end if;
+    if (
+      new.pdf_storage_bucket = 'property-media-public'
+      or new.pptx_storage_bucket = 'property-media-public'
+      or new.cover_storage_bucket = 'property-media-public'
+    ) and coalesce(prop_published, false) is false then
+      raise exception 'SECURITY VIOLATION: Unpublished property presentations cannot target property-media-public';
+    end if;
   end if;
   return new;
 end;
@@ -218,6 +337,12 @@ create trigger trg_enforce_image_public_scope
 drop trigger if exists trg_enforce_document_public_scope on public.property_documents;
 create trigger trg_enforce_document_public_scope
   before insert or update on public.property_documents
+  for each row
+  execute function public.enforce_media_public_scope();
+
+drop trigger if exists trg_enforce_presentation_public_scope on public.property_presentations;
+create trigger trg_enforce_presentation_public_scope
+  before insert or update on public.property_presentations
   for each row
   execute function public.enforce_media_public_scope();
 
@@ -241,6 +366,17 @@ begin
     set storage_bucket = 'property-media-private'
     where property_id = new.id
       and storage_bucket = 'property-media-public';
+
+    update public.property_presentations
+    set pdf_storage_bucket = 'property-media-private',
+        pptx_storage_bucket = 'property-media-private',
+        cover_storage_bucket = 'property-media-private'
+    where property_id = new.id
+      and (
+        pdf_storage_bucket = 'property-media-public'
+        or pptx_storage_bucket = 'property-media-public'
+        or cover_storage_bucket = 'property-media-public'
+      );
   end if;
   return new;
 end;
@@ -306,10 +442,11 @@ create index if not exists idx_properties_visibility_status on public.properties
 create index if not exists idx_property_images_prop_sort on public.property_images(property_id, sort_order);
 create index if not exists idx_property_videos_prop_sort on public.property_videos(property_id, sort_order);
 create index if not exists idx_property_documents_prop_vis on public.property_documents(property_id, visibility);
+create index if not exists idx_property_presentations_prop_sort on public.property_presentations(property_id, visibility, sort_order);
 create index if not exists idx_inquiries_lot_status on public.inquiries(property_lot_id, status, created_at desc);
 
 -- ============================================================================
--- 6. ROW-LEVEL SECURITY (RLS) & LEAST-PRIVILEGE GRANTS
+-- 6. ROW-LEVEL SECURITY (RLS), REDACTED VIEWS & LEAST-PRIVILEGE GRANTS
 -- ============================================================================
 
 alter table public.admin_users enable row level security;
@@ -318,6 +455,7 @@ alter table public.properties enable row level security;
 alter table public.property_images enable row level security;
 alter table public.property_videos enable row level security;
 alter table public.property_documents enable row level security;
+alter table public.property_presentations enable row level security;
 alter table public.inquiries enable row level security;
 
 revoke all on public.admin_users from anon, authenticated;
@@ -328,8 +466,7 @@ grant select on public.site_settings to anon, authenticated;
 grant insert, update, delete on public.site_settings to authenticated;
 
 revoke all on public.properties from anon, authenticated;
-grant select on public.properties to anon, authenticated;
-grant insert, update, delete on public.properties to authenticated;
+grant select, insert, update, delete on public.properties to authenticated;
 
 revoke all on public.property_images from anon, authenticated;
 grant select on public.property_images to anon, authenticated;
@@ -342,6 +479,9 @@ grant insert, update, delete on public.property_videos to authenticated;
 revoke all on public.property_documents from anon, authenticated;
 grant select on public.property_documents to anon, authenticated;
 grant insert, update, delete on public.property_documents to authenticated;
+
+revoke all on public.property_presentations from anon, authenticated;
+grant select, insert, update, delete on public.property_presentations to authenticated;
 
 revoke all on public.inquiries from anon, authenticated;
 grant insert (
@@ -375,10 +515,11 @@ create policy "Admin manage site settings"
   with check (public.is_authorized_admin());
 
 drop policy if exists "Public read published properties" on public.properties;
-create policy "Public read published properties"
+drop policy if exists "Admin read all properties" on public.properties;
+create policy "Admin read all properties"
   on public.properties for select
-  to anon, authenticated
-  using (visibility = 'Published' and is_archived = false);
+  to authenticated
+  using (public.is_authorized_admin());
 
 drop policy if exists "Admin full access to properties" on public.properties;
 create policy "Admin full access to properties"
@@ -394,10 +535,7 @@ create policy "Public read published property images"
   using (
     is_approved_public = true
     and storage_bucket = 'property-media-public'
-    and exists (
-      select 1 from public.properties p
-      where p.id = property_id and p.visibility = 'Published' and p.is_archived = false
-    )
+    and public.is_published_property(property_id)
   );
 
 drop policy if exists "Admin manage property images" on public.property_images;
@@ -411,12 +549,7 @@ drop policy if exists "Public read published property videos" on public.property
 create policy "Public read published property videos"
   on public.property_videos for select
   to anon, authenticated
-  using (
-    exists (
-      select 1 from public.properties p
-      where p.id = property_id and p.visibility = 'Published' and p.is_archived = false
-    )
-  );
+  using (public.is_published_property(property_id));
 
 drop policy if exists "Admin manage property videos" on public.property_videos;
 create policy "Admin manage property videos"
@@ -432,15 +565,19 @@ create policy "Public read approved public documents"
   using (
     visibility = 'Public'
     and storage_bucket = 'property-media-public'
-    and exists (
-      select 1 from public.properties p
-      where p.id = property_id and p.visibility = 'Published' and p.is_archived = false
-    )
+    and public.is_published_property(property_id)
   );
 
 drop policy if exists "Admin manage property documents" on public.property_documents;
 create policy "Admin manage property documents"
   on public.property_documents for all
+  to authenticated
+  using (public.is_authorized_admin())
+  with check (public.is_authorized_admin());
+
+drop policy if exists "Admin manage property presentations" on public.property_presentations;
+create policy "Admin manage property presentations"
+  on public.property_presentations for all
   to authenticated
   using (public.is_authorized_admin())
   with check (public.is_authorized_admin());
@@ -453,12 +590,7 @@ create policy "Public insert inquiries"
     status = 'New'
     and (
       property_lot_id is null
-      or exists (
-        select 1 from public.properties p
-        where p.lot_id = property_lot_id
-          and p.visibility = 'Published'
-          and p.is_archived = false
-      )
+      or public.is_published_property_lot(property_lot_id)
     )
   );
 
@@ -488,6 +620,94 @@ create policy "Admin delete inquiries"
   to authenticated
   using (public.is_authorized_admin());
 
+-- Public redacted views
+create or replace view public.public_properties
+with (security_barrier = true)
+as
+select
+  p.id,
+  p.lot_id,
+  p.title,
+  p.barangay,
+  p.city,
+  p.province,
+  p.region,
+  p.complete_location,
+  p.lot_area_sqm,
+  p.frontage_length_m,
+  p.boundary_description,
+  case when p.show_selling_price then p.price_total_php else null end as price_total_php,
+  case when p.show_price_per_sqm then p.price_per_sqm else null end as price_per_sqm,
+  p.show_selling_price,
+  p.show_price_per_sqm,
+  p.is_negotiable,
+  p.classification,
+  p.status,
+  p.visibility,
+  p.is_archived,
+  p.is_featured,
+  p.road_access,
+  p.utilities,
+  p.terrain,
+  p.nearby_landmarks,
+  p.title_status,
+  p.tax_declaration_status,
+  p.additional_remarks,
+  p.description,
+  p.highlights,
+  p.photos,
+  p.youtube_url,
+  p.latitude,
+  p.longitude,
+  p.google_maps_url,
+  p.agent_name,
+  p.agent_phone,
+  p.agent_whatsapp,
+  p.agent_messenger,
+  p.published_at,
+  p.created_at,
+  p.updated_at
+from public.properties p
+where p.visibility = 'Published'
+  and p.is_archived = false;
+
+revoke all on public.public_properties from public;
+grant select on public.public_properties to anon, authenticated;
+
+create or replace view public.public_property_presentations
+with (security_barrier = true)
+as
+select
+  pp.id,
+  pp.property_id,
+  pp.title,
+  pp.description,
+  pp.visibility,
+  pp.allow_download,
+  pp.sort_order,
+  pp.slide_count,
+  pp.pdf_storage_bucket,
+  pp.pdf_storage_path,
+  case when pp.allow_download then pp.pdf_file_name else '' end as pdf_file_name,
+  pp.pdf_mime_type,
+  case when pp.allow_download then pp.pdf_file_size_bytes else 0 end as pdf_file_size_bytes,
+  case when pp.allow_download then pp.pptx_storage_bucket else 'property-media-private' end as pptx_storage_bucket,
+  case when pp.allow_download then pp.pptx_storage_path else '' end as pptx_storage_path,
+  case when pp.allow_download then pp.pptx_file_name else '' end as pptx_file_name,
+  case when pp.allow_download then pp.pptx_mime_type else '' end as pptx_mime_type,
+  case when pp.allow_download then pp.pptx_file_size_bytes else 0 end as pptx_file_size_bytes,
+  pp.cover_storage_bucket,
+  pp.cover_storage_path,
+  pp.cover_public_url,
+  pp.created_at,
+  pp.updated_at
+from public.property_presentations pp
+where pp.visibility = 'Public'
+  and public.is_published_property(pp.property_id);
+
+revoke all on public.public_property_presentations from public;
+grant select on public.public_property_presentations to anon, authenticated;
+
 -- ============================================================================
 -- 7. SUPABASE STORAGE BUCKETS & HARDENED OBJECT POLICIES
 -- ============================================================================
@@ -498,21 +718,28 @@ values
     'property-media-public',
     'property-media-public',
     true,
-    10485760,
-    array['image/jpeg', 'image/png', 'image/webp', 'application/pdf']
+    26214400,
+    array[
+      'image/jpeg',
+      'image/png',
+      'image/webp',
+      'application/pdf',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation'
+    ]
   ),
   (
     'property-media-private',
     'property-media-private',
     false,
-    20971520,
+    31457280,
     array[
       'image/jpeg',
       'image/png',
       'image/webp',
       'application/pdf',
       'application/msword',
-      'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+      'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation'
     ]
   )
 on conflict (id) do update
@@ -527,27 +754,38 @@ create policy "Public read approved media bucket"
   to anon, authenticated
   using (
     bucket_id = 'property-media-public'
-    and (storage.foldername(name))[2] in ('images', 'documents')
+    and (storage.foldername(name))[2] in ('images', 'documents', 'presentations')
     and (
       exists (
         select 1
         from public.property_images pi
-        join public.properties p on p.id = pi.property_id
         where pi.storage_bucket = 'property-media-public'
           and pi.storage_path = name
           and pi.is_approved_public = true
-          and p.visibility = 'Published'
-          and p.is_archived = false
+          and public.is_published_property(pi.property_id)
       )
       or exists (
         select 1
         from public.property_documents pd
-        join public.properties p on p.id = pd.property_id
         where pd.storage_bucket = 'property-media-public'
           and pd.storage_path = name
           and pd.visibility = 'Public'
-          and p.visibility = 'Published'
-          and p.is_archived = false
+          and public.is_published_property(pd.property_id)
+      )
+      or exists (
+        select 1
+        from public.property_presentations pp
+        where pp.visibility = 'Public'
+          and public.is_published_property(pp.property_id)
+          and (
+            (pp.pdf_storage_bucket = 'property-media-public' and pp.pdf_storage_path = name)
+            or (pp.cover_storage_bucket = 'property-media-public' and pp.cover_storage_path = name)
+            or (
+              pp.allow_download = true
+              and pp.pptx_storage_bucket = 'property-media-public'
+              and pp.pptx_storage_path = name
+            )
+          )
       )
     )
   );
@@ -560,7 +798,7 @@ create policy "Admin write public media bucket"
   with check (
     bucket_id = 'property-media-public'
     and public.is_authorized_admin()
-    and (storage.foldername(name))[2] in ('images', 'documents')
+    and (storage.foldername(name))[2] in ('images', 'documents', 'presentations')
     and name !~ '(^|/)\.\.(/|$)'
   );
 
@@ -572,6 +810,6 @@ create policy "Admin full access private media bucket"
   with check (
     bucket_id = 'property-media-private'
     and public.is_authorized_admin()
-    and (storage.foldername(name))[2] in ('images', 'documents')
+    and (storage.foldername(name))[2] in ('images', 'documents', 'presentations')
     and name !~ '(^|/)\.\.(/|$)'
   );

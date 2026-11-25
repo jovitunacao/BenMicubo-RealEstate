@@ -2,10 +2,10 @@ import {Link} from 'react-router-dom';
 import {ArrowUpRight, QrCode} from 'lucide-react';
 import type {Property} from '../types/property';
 import {
-  computePricePerSqm,
-  formatPhp,
+  formatFrontageLength,
   formatSqm,
-  shouldDisplayLotDimensions,
+  hasVisibleFrontageLength,
+  resolvePropertyPricingDisplay,
 } from '../utils/format';
 import {PropertyImage} from './PropertyImage';
 import {StatusIndicator} from './StatusIndicator';
@@ -15,7 +15,10 @@ interface PropertyCardProps {
 }
 
 export function PropertyCard({property}: PropertyCardProps) {
-  const pricePerSqm = computePricePerSqm(property.priceTotalPhp, property.lotAreaSqm);
+  const pricing = resolvePropertyPricingDisplay(property);
+  const frontageLabel = hasVisibleFrontageLength(property)
+    ? formatFrontageLength(property.frontageLengthM)
+    : '';
 
   return (
     <article className="group bg-white border border-[#E6E6EF] rounded-xl overflow-hidden flex flex-col transition-colors duration-200 hover:border-[#B9A7DE]">
@@ -55,26 +58,34 @@ export function PropertyCard({property}: PropertyCardProps) {
 
           <p className="mt-1.5 text-xs text-[#4B4D57] flex items-center gap-1.5 flex-wrap tabular-nums">
             <span>{formatSqm(property.lotAreaSqm)}</span>
-            <span aria-hidden="true">·</span>
-            <span>{property.classification}</span>
-            {shouldDisplayLotDimensions(property) && (
+            {frontageLabel && (
               <>
                 <span aria-hidden="true">·</span>
-                <span className="truncate">{property.dimensions}</span>
+                <span>{frontageLabel} frontage</span>
               </>
             )}
+            <span aria-hidden="true">·</span>
+            <span>{property.classification}</span>
           </p>
         </div>
 
         <div className="pt-4 border-t border-[#EFEFF6] flex items-end justify-between gap-3">
           <div>
             <p className="font-display text-lg font-bold text-[#202124] tabular-nums leading-none">
-              {formatPhp(property.priceTotalPhp)}
+              {pricing.primaryHeadlineLabel}
             </p>
             <p className="mt-1 text-xs text-[#696B77] font-mono tabular-nums">
-              {formatPhp(pricePerSqm)} / sqm
-              {property.isNegotiable && (
-                <span className="font-sans text-[#6500B5] font-medium"> · Negotiable</span>
+              {pricing.isPriceUponRequest ? (
+                <span className="font-sans text-[#4B4D57]">Contact for pricing</span>
+              ) : (
+                <>
+                  {pricing.secondarySubLabel && <span>{pricing.secondarySubLabel}</span>}
+                  {property.isNegotiable && (
+                    <span className="font-sans text-[#6500B5] font-medium">
+                      {pricing.secondarySubLabel ? ' · ' : ''}Negotiable
+                    </span>
+                  )}
+                </>
               )}
             </p>
           </div>

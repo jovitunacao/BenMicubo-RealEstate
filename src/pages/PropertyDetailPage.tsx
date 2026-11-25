@@ -1,4 +1,4 @@
-import {useEffect, useRef, useState} from 'react';
+import {lazy, Suspense, useEffect, useRef, useState} from 'react';
 import {Link, useParams, useSearchParams} from 'react-router-dom';
 import {
   ArrowLeft,
@@ -25,7 +25,11 @@ import {PropertyVideoPlayer} from '../components/PropertyVideoPlayer';
 import {QRCodeCanvas} from '../components/QRCodeCanvas';
 import {InquiryForm} from '../components/InquiryForm';
 import {ShareListingButton} from '../components/ShareListingButton';
-import {filterPublicDocuments, isPropertyPubliclyVisible} from '../services/propertyService';
+import {
+  filterPublicDocuments,
+  filterPublicPresentations,
+  isPropertyPubliclyVisible,
+} from '../services/propertyService';
 import {
   getAuthorizedDocumentDownloadUrl,
   refreshPrivateImageSignedUrl,
@@ -33,19 +37,25 @@ import {
 import {
   buildMessengerLink,
   buildWhatsAppLink,
-  computePricePerSqm,
   formatDateShort,
   formatFileSize,
-  formatPhp,
+  formatFrontageLength,
   formatSqm,
   getPropertyPermalink,
-  shouldDisplayLotDimensions,
+  hasVisibleFrontageLength,
+  resolvePropertyPricingDisplay,
 } from '../utils/format';
 import {formatEditorialParagraphs} from '../utils/dossierLayout';
 import {buildPropertyGallerySlides, resolveNextGalleryIndex} from '../utils/gallery';
 import {formatLatLngDisplay, sanitizeGoogleMapsHref} from '../utils/googleMaps';
 import {parsePropertyVideoUrl} from '../utils/video';
 import {buildDistributableQrUrl} from '../utils/siteUrl';
+
+const LazyPropertyPresentationViewer = lazy(() =>
+  import('../components/PropertyPresentationViewer').then((m) => ({
+    default: m.PropertyPresentationViewer,
+  }))
+);
 
 export function PropertyDetailPage() {
   const {lotId = ''} = useParams();
@@ -138,8 +148,7 @@ export function PropertyDetailPage() {
     galleryImages.length > 0 ? Math.min(activePhotoIndex, galleryImages.length - 1) : 0;
   const currentImage = galleryImages[safeActiveIndex] || galleryImages[0];
   const currentPhoto = currentImage?.url || '';
-  const pricePerSqm =
-    property.pricePerSqm || computePricePerSqm(property.priceTotalPhp, property.lotAreaSqm);
+  const pricing = resolvePropertyPricingDisplay(property);
   const qrTargetUrl =
     buildDistributableQrUrl(effectiveCanonicalSiteUrl, property.lotId) || '';
   const permalink = getPropertyPermalink(property.lotId, effectiveCanonicalSiteUrl);
@@ -171,6 +180,9 @@ export function PropertyDetailPage() {
 
   // Strict privacy guard: NEVER display Private admin documents on public detail page
   const publicDocuments = filterPublicDocuments(property.documents || []);
+  const visiblePresentations = isPreviewAllowed
+    ? [...(property.presentations || [])].sort((a, b) => a.sortOrder - b.sortOrder)
+    : filterPublicPresentations(property.presentations || []);
   const descriptionParagraphs = formatEditorialParagraphs(property.description || '');
 
   const handlePrevPhoto = () => {
@@ -458,25 +470,41 @@ export function PropertyDetailPage() {
               <div className="mt-6 flex flex-wrap items-baseline gap-x-8 gap-y-3">
                 <div>
                   <span className="text-[10px] tracking-[0.16em] uppercase text-[#6B665E] block">
-                    Total Selling Price
+                    {pricing.isPriceUponRequest
+                      ? 'Valuation Inquiry'
+                      : pricing.showSellingPrice
+                        ? 'Total Selling Price'
+                        : 'Rate per Square Meter'}
                   </span>
-                  <span className="font-editorial text-3xl sm:text-4xl font-semibold text-[#1C1B19] tabular-nums">
-                    {formatPhp(property.priceTotalPhp)}
-                  </span>
-                  {property.isNegotiable && (
-                    <span className="ml-2.5 text-[11px] font-medium tracking-[0.12em] uppercase text-[#8A6D3B]">
-                      Negotiable
+                  <div className="flex flex-wrap items-baseline gap-3">
+                    <span className="font-editorial text-3xl sm:text-4xl font-semibold text-[#1C1B19] tabular-nums">
+                      {pricing.primaryHeadlineLabel}
                     </span>
+                    {property.isNegotiable && !pricing.isPriceUponRequest && (
+                      <span className="text-[11px] font-medium tracking-[0.12em] uppercase text-[#8A6D3B]">
+                        Negotiable
+                      </span>
+                    )}
+                  </div>
+                  {pricing.isPriceUponRequest && (
+                    <a
+                      href="#inquiry-card"
+                      className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-[#8A6D3B] hover:underline"
+                    >
+                      <span>Request Pricing &amp; Terms via Inquiry Form →</span>
+                    </a>
                   )}
                 </div>
-                <div>
-                  <span className="text-[10px] tracking-[0.16em] uppercase text-[#6B665E] block">
-                    Rate per Square Meter
-                  </span>
-                  <span className="font-mono text-base sm:text-lg font-medium text-[#1C1B19] tabular-nums">
-                    {formatPhp(pricePerSqm)} / sqm
-                  </span>
-                </div>
+                {pricing.secondarySubLabel && (
+                  <div>
+                    <span className="text-[10px] tracking-[0.16em] uppercase text-[#6B665E] block">
+                      Rate per Square Meter
+                    </span>
+                    <span className="font-mono text-base sm:text-lg font-medium text-[#1C1B19] tabular-nums">
+                      {pricing.secondarySubLabel}
+                    </span>
+                  </div>
+                )}
                 <div className="sm:ml-auto text-xs text-[#6B665E] font-mono">
                   Updated {formatDateShort(property.updatedAt)}
                 </div>
@@ -485,7 +513,10 @@ export function PropertyDetailPage() {
 
             {/* Hairline Architectural Specifications Ledger */}
             {(() => {
-              const showDimensions = shouldDisplayLotDimensions(property);
+              const showFrontage = hasVisibleFrontageLength(property);
+              const frontageLabel = showFrontage
+                ? formatFrontageLength(property.frontageLengthM)
+                : '';
               const coreSpecs: Array<{
                 label: string;
                 value: string;
@@ -497,11 +528,11 @@ export function PropertyDetailPage() {
                   value: formatSqm(property.lotAreaSqm),
                   mono: true,
                 },
-                ...(showDimensions
+                ...(showFrontage && frontageLabel
                   ? [
                       {
-                        label: 'Lot Dimensions',
-                        value: property.dimensions.trim(),
+                        label: 'Frontage Length',
+                        value: frontageLabel,
                         mono: true,
                       },
                     ]
@@ -532,7 +563,7 @@ export function PropertyDetailPage() {
                 },
               ];
 
-              // Balance the 2-column grid so omitting Lot Dimensions leaves zero blank space
+              // Balance the 2-column grid so omitting Frontage Length leaves zero blank space
               if (coreSpecs.length % 2 === 1 && coreSpecs.length > 0) {
                 coreSpecs[0] = {...coreSpecs[0], fullWidth: true};
               }
@@ -681,6 +712,24 @@ export function PropertyDetailPage() {
                 </div>
               )}
             </section>
+
+            {/* Lazy-Loaded PowerPoint / PDF Presentation Viewer — Hidden when none exist */}
+            {visiblePresentations.length > 0 && (
+              <Suspense
+                fallback={
+                  <div className="p-6 border border-[#E2DDD3] bg-[#F4F0E8] text-xs text-[#6B665E]">
+                    Preparing property presentation viewer...
+                  </div>
+                }
+              >
+                <LazyPropertyPresentationViewer
+                  lotId={property.lotId}
+                  propertyTitle={property.title}
+                  presentations={visiblePresentations}
+                  isPreviewAllowed={isPreviewAllowed}
+                />
+              </Suspense>
+            )}
 
             {/* Public Buyer-Downloadable Documents Only */}
             {publicDocuments.length > 0 && (
@@ -864,12 +913,12 @@ export function PropertyDetailPage() {
             </div>
 
             {/* Buyer Inquiry Form */}
-            <div className="p-6 border border-[#E2DDD3] bg-white">
+            <div id="inquiry-card" className="p-6 border border-[#E2DDD3] bg-white">
               <h2 className="font-editorial text-2xl font-semibold text-[#1C1B19]">
                 Inquire About {property.lotId}
               </h2>
               <p className="mt-1 text-xs text-[#6B665E] mb-4">
-                Request the certified true copy of title, sample computation, or schedule a site tripping.
+                Request pricing terms, certified true copy of title, sample computation, or schedule a site tripping.
               </p>
               <InquiryForm propertyLotId={property.lotId} propertyTitle={property.title} />
             </div>

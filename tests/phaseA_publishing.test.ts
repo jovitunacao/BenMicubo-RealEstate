@@ -32,6 +32,7 @@ function createStatefulMockSupabase(failures: FailureFlags = {}) {
     property_images: [],
     property_videos: [],
     property_documents: [],
+    property_presentations: [],
     admin_users: [],
     inquiries: [],
     site_settings: [],
@@ -173,6 +174,13 @@ function createStatefulMockSupabase(failures: FailureFlags = {}) {
                     doc.storage_bucket = PRIVATE_MEDIA_BUCKET;
                   }
                 }
+                for (const pres of tables.property_presentations) {
+                  if (pres.property_id === row.id) {
+                    pres.pdf_storage_bucket = PRIVATE_MEDIA_BUCKET;
+                    pres.pptx_storage_bucket = PRIVATE_MEDIA_BUCKET;
+                    pres.cover_storage_bucket = PRIVATE_MEDIA_BUCKET;
+                  }
+                }
               }
               matched.push({...row});
             }
@@ -205,12 +213,29 @@ function createStatefulMockSupabase(failures: FailureFlags = {}) {
             tables.property_documents = tables.property_documents.filter(
               (r) => !removedIds.has(r.property_id)
             );
+            tables.property_presentations = tables.property_presentations.filter(
+              (r) => !removedIds.has(r.property_id)
+            );
           }
           return {data: null, error: null};
         }
 
         // select
-        const rows = tables[this.table]
+        const sourceRows: Array<Record<string, unknown>> =
+          this.table === 'public_properties'
+            ? tables.properties
+                .filter((row) => row.visibility === 'Published' && !row.is_archived)
+                .map((row) => ({
+                  ...row,
+                  dimensions: undefined,
+                  price_total_php: row.show_selling_price === false ? null : row.price_total_php,
+                  price_per_sqm: row.show_price_per_sqm === false ? null : row.price_per_sqm,
+                }))
+            : this.table === 'public_property_presentations'
+              ? tables.property_presentations.filter((row) => row.visibility === 'Public')
+              : tables[this.table] || [];
+
+        const rows = sourceRows
           .filter((row) => this.filters.every((fn) => fn(row)))
           .map((row) => {
             if (this.table !== 'properties') return {...row};
@@ -225,6 +250,9 @@ function createStatefulMockSupabase(failures: FailureFlags = {}) {
               property_documents: tables.property_documents
                 .filter((d) => d.property_id === row.id)
                 .map((d) => ({...d})),
+              property_presentations: tables.property_presentations
+                .filter((p) => p.property_id === row.id)
+                .map((p) => ({...p})),
             };
           });
         return {data: this.wantSingle ? rows[0] || null : rows, error: null};

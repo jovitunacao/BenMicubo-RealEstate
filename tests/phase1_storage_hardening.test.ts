@@ -56,6 +56,7 @@ function createPhase1MockSupabase(failures: FailureFlags = {}) {
     property_images: [],
     property_videos: [],
     property_documents: [],
+    property_presentations: [],
     admin_users: [],
     inquiries: [],
     site_settings: [],
@@ -83,6 +84,20 @@ function createPhase1MockSupabase(failures: FailureFlags = {}) {
         throw new Error(
           'SECURITY VIOLATION: Unpublished property documents cannot target property-media-public'
         );
+      }
+    }
+    if (table === 'property_presentations') {
+      const prop = tables.properties.find((p) => p.id === row.property_id);
+      const isPub = Boolean(prop && prop.visibility === 'Published' && !prop.is_archived);
+      const allowPub = isPub && row.visibility === 'Public';
+      if (row.pdf_storage_bucket === PUBLIC_MEDIA_BUCKET && !allowPub) {
+        throw new Error('SECURITY VIOLATION: Private or unpublished presentation PDF cannot target public storage');
+      }
+      if (row.pptx_storage_bucket === PUBLIC_MEDIA_BUCKET && (!allowPub || !row.allow_download)) {
+        throw new Error('SECURITY VIOLATION: Non-downloadable or private PPTX cannot target public storage');
+      }
+      if (row.cover_storage_bucket === PUBLIC_MEDIA_BUCKET && !allowPub) {
+        throw new Error('SECURITY VIOLATION: Private or unpublished presentation cover cannot target public storage');
       }
     }
   }
@@ -199,6 +214,13 @@ function createPhase1MockSupabase(failures: FailureFlags = {}) {
                     doc.storage_bucket = PRIVATE_MEDIA_BUCKET;
                   }
                 }
+                for (const pres of tables.property_presentations) {
+                  if (pres.property_id === row.id) {
+                    pres.pdf_storage_bucket = PRIVATE_MEDIA_BUCKET;
+                    pres.pptx_storage_bucket = PRIVATE_MEDIA_BUCKET;
+                    pres.cover_storage_bucket = PRIVATE_MEDIA_BUCKET;
+                  }
+                }
               }
               matched.push({...row});
             }
@@ -231,11 +253,28 @@ function createPhase1MockSupabase(failures: FailureFlags = {}) {
             tables.property_documents = tables.property_documents.filter(
               (r) => !removedIds.has(r.property_id)
             );
+            tables.property_presentations = tables.property_presentations.filter(
+              (r) => !removedIds.has(r.property_id)
+            );
           }
           return {data: null, error: null};
         }
 
-        const rows = tables[this.table]
+        const sourceRows: Array<Record<string, unknown>> =
+          this.table === 'public_properties'
+            ? tables.properties
+                .filter((row) => row.visibility === 'Published' && !row.is_archived)
+                .map((row) => ({
+                  ...row,
+                  dimensions: undefined,
+                  price_total_php: row.show_selling_price === false ? null : row.price_total_php,
+                  price_per_sqm: row.show_price_per_sqm === false ? null : row.price_per_sqm,
+                }))
+            : this.table === 'public_property_presentations'
+              ? tables.property_presentations.filter((row) => row.visibility === 'Public')
+              : tables[this.table] || [];
+
+        const rows = sourceRows
           .filter((row) => this.filters.every((fn) => fn(row)))
           .map((row) => {
             if (this.table !== 'properties') return {...row};
@@ -250,6 +289,9 @@ function createPhase1MockSupabase(failures: FailureFlags = {}) {
               property_documents: tables.property_documents
                 .filter((d) => d.property_id === row.id)
                 .map((d) => ({...d})),
+              property_presentations: tables.property_presentations
+                .filter((p) => p.property_id === row.id)
+                .map((p) => ({...p})),
             };
           });
         return {data: this.wantSingle ? rows[0] || null : rows, error: null};

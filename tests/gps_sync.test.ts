@@ -44,6 +44,7 @@ function createGpsMockSupabase() {
     property_images: [],
     property_videos: [],
     property_documents: [],
+    property_presentations: [],
   };
   let seq = 1;
 
@@ -135,7 +136,20 @@ function createGpsMockSupabase() {
         return {data: null, error: null};
       }
 
-      const rows = tables[this.table]
+      const sourceRows =
+        this.table === 'public_properties'
+          ? tables.properties
+              .filter((row) => row.visibility === 'Published' && !row.is_archived)
+              .map((row) => ({
+                ...row,
+                price_total_php: row.show_selling_price === false ? null : row.price_total_php,
+                price_per_sqm: row.show_price_per_sqm === false ? null : row.price_per_sqm,
+              }))
+          : this.table === 'public_property_presentations'
+            ? tables.property_presentations.filter((row) => row.visibility === 'Public')
+            : tables[this.table] || [];
+
+      const rows = sourceRows
         .filter((row) => this.filters.every((fn) => fn(row)))
         .map((row) => {
           if (this.table !== 'properties') return {...row};
@@ -144,6 +158,7 @@ function createGpsMockSupabase() {
             property_images: [],
             property_videos: [],
             property_documents: [],
+            property_presentations: [],
           };
         });
       return {data: this.wantSingle ? rows[0] || null : rows, error: null};

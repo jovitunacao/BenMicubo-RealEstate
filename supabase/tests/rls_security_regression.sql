@@ -4,7 +4,7 @@
 
 begin;
 
--- 1. Verify RLS is enabled on all 7 exposed tables
+-- 1. Verify RLS is enabled on all 8 exposed tables
 do $$
 declare
   tbl text;
@@ -17,6 +17,7 @@ begin
     'property_images',
     'property_videos',
     'property_documents',
+    'property_presentations',
     'inquiries'
   ]
   loop
@@ -31,7 +32,7 @@ begin
   end loop;
 end $$;
 
--- 2. Verify anon & public cannot execute SECURITY DEFINER helpers directly
+-- 2. Verify anon & public cannot execute SECURITY DEFINER admin/trigger helpers directly
 do $$
 begin
   if has_function_privilege('anon', 'public.is_authorized_admin()', 'EXECUTE') then
@@ -85,20 +86,23 @@ begin
   end if;
 end $$;
 
--- 5. Seed test records & verify database triggers enforce media confidentiality
+-- 5. Seed test records & verify database triggers enforce media & presentation confidentiality
 insert into public.properties (
-  lot_id, title, city, province, lot_area_sqm, price_total_php,
+  lot_id, title, city, province, lot_area_sqm, frontage_length_m,
+  price_total_php, price_per_sqm, show_selling_price, show_price_per_sqm,
   classification, status, visibility, is_archived, latitude, longitude,
   agent_name, agent_phone, agent_whatsapp
 ) values
 (
   'LOT-TEST-PUB', 'Published Regression Lot', 'Tagaytay City', 'Cavite',
-  500, 5000000, 'Residential', 'Available', 'Published', false, 14.1, 120.9,
+  500, 22.5, 5000000, 10000, false, false,
+  'Residential', 'Available', 'Published', false, 14.1, 120.9,
   'BEN MICUBO REAL ESTATE SERVICES', '+63 917 888 0001', '639178880001'
 ),
 (
   'LOT-TEST-DRF', 'Draft Regression Lot', 'Alfonso', 'Cavite',
-  500, 5000000, 'Residential', 'Available', 'Draft', false, 14.1, 120.9,
+  500, null, 5000000, 10000, true, true,
+  'Residential', 'Available', 'Draft', false, 14.1, 120.9,
   '', '', ''
 );
 
@@ -120,7 +124,27 @@ insert into public.property_documents (
 select id, 'Public Brochure', 'PDF Brochure', 'Public', 'property-media-public', 'LOT-TEST-PUB/documents/brochure.pdf', 'brochure.pdf', 'application/pdf', 2048
 from public.properties where lot_id = 'LOT-TEST-PUB';
 
--- Trigger must block unapproved/Draft media and Private documents from targeting property-media-public
+insert into public.property_presentations (
+  property_id, title, visibility, allow_download, sort_order,
+  pdf_storage_bucket, pdf_storage_path, pdf_file_name, pdf_mime_type, pdf_file_size_bytes,
+  pptx_storage_bucket, pptx_storage_path, pptx_file_name, pptx_mime_type, pptx_file_size_bytes
+)
+select
+  id, 'Public View-Only Deck', 'Public', false, 0,
+  'property-media-public', 'LOT-TEST-PUB/presentations/deck.pdf', 'deck.pdf', 'application/pdf', 4096,
+  'property-media-private', 'LOT-TEST-PUB/presentations/deck.pptx', 'deck.pptx', 'application/vnd.openxmlformats-officedocument.presentationml.presentation', 8192
+from public.properties where lot_id = 'LOT-TEST-PUB';
+
+insert into public.property_presentations (
+  property_id, title, visibility, allow_download, sort_order,
+  pdf_storage_bucket, pdf_storage_path, pdf_file_name, pdf_mime_type, pdf_file_size_bytes
+)
+select
+  id, 'Confidential Investment Memo', 'Private', false, 1,
+  'property-media-private', 'LOT-TEST-PUB/presentations/private-memo.pdf', 'private-memo.pdf', 'application/pdf', 4096
+from public.properties where lot_id = 'LOT-TEST-PUB';
+
+-- Trigger must block unapproved/Draft media, Private documents, Private presentations, and non-downloadable PPTX from property-media-public
 do $$
 declare
   draft_prop_id uuid;
@@ -150,30 +174,68 @@ begin
   exception when check_violation or raise_exception then
     null;
   end;
+
+  begin
+    insert into public.property_presentations (
+      property_id, title, visibility, allow_download,
+      pdf_storage_bucket, pdf_storage_path, pptx_storage_bucket, pptx_storage_path
+    ) values (
+      pub_prop_id, 'PPTX Leak Deck', 'Public', false,
+      'property-media-public', 'LOT-TEST-PUB/presentations/ok.pdf',
+      'property-media-public', 'LOT-TEST-PUB/presentations/leak.pptx'
+    );
+    raise exception 'SECURITY REGRESSION: Non-downloadable PPTX was allowed into property-media-public';
+  exception when check_violation or raise_exception then
+    null;
+  end;
 end $$;
 
 insert into storage.objects (bucket_id, name)
 values
   ('property-media-public', 'LOT-TEST-PUB/images/pub.webp'),
   ('property-media-public', 'LOT-TEST-PUB/documents/brochure.pdf'),
+  ('property-media-public', 'LOT-TEST-PUB/presentations/deck.pdf'),
   ('property-media-public', 'LOT-TEST-DRF/images/stale-unlinked.webp'),
-  ('property-media-private', 'LOT-TEST-PUB/documents/tct.pdf')
+  ('property-media-private', 'LOT-TEST-PUB/documents/tct.pdf'),
+  ('property-media-private', 'LOT-TEST-PUB/presentations/deck.pptx'),
+  ('property-media-private', 'LOT-TEST-PUB/presentations/private-memo.pdf')
 on conflict (bucket_id, name) do nothing;
 
--- 6. Behavioral RLS tests under ANON role
+-- 6. Behavioral RLS & Redaction tests under ANON role
 set local role anon;
 
 do $$
 declare
+  raw_prop_count int;
   draft_count int;
+  pub_price_total numeric;
+  pub_price_sqm numeric;
   priv_doc_count int;
+  priv_pres_count int;
+  leaked_pptx_path text;
   pub_obj_count int;
+  pub_pres_obj_count int;
   stale_obj_count int;
   priv_obj_count int;
 begin
-  select count(*) into draft_count from public.properties where lot_id = 'LOT-TEST-DRF';
+  -- Base properties table must return 0 rows to anon (prevents bypassing price redaction)
+  select count(*) into raw_prop_count from public.properties;
+  if raw_prop_count <> 0 then
+    raise exception 'SECURITY REGRESSION: anon can SELECT directly from raw public.properties table';
+  end if;
+
+  -- Public view hides Drafts and redacts hidden prices to NULL
+  select count(*) into draft_count from public.public_properties where lot_id = 'LOT-TEST-DRF';
   if draft_count <> 0 then
-    raise exception 'SECURITY REGRESSION: anon can read Draft property';
+    raise exception 'SECURITY REGRESSION: anon can read Draft property via public_properties';
+  end if;
+
+  select price_total_php, price_per_sqm
+  into pub_price_total, pub_price_sqm
+  from public.public_properties
+  where lot_id = 'LOT-TEST-PUB';
+  if pub_price_total is not null or pub_price_sqm is not null then
+    raise exception 'SECURITY REGRESSION: Hidden price columns leaked in public_properties view';
   end if;
 
   select count(*) into priv_doc_count from public.property_documents where title = 'Private TCT';
@@ -181,11 +243,29 @@ begin
     raise exception 'SECURITY REGRESSION: anon can read Private document';
   end if;
 
+  -- Public presentation view hides Private decks and redacts PPTX path when allow_download = false
+  select count(*) into priv_pres_count from public.public_property_presentations where title = 'Confidential Investment Memo';
+  if priv_pres_count <> 0 then
+    raise exception 'SECURITY REGRESSION: anon can read Private presentation';
+  end if;
+
+  select pptx_storage_path into leaked_pptx_path from public.public_property_presentations where title = 'Public View-Only Deck';
+  if coalesce(leaked_pptx_path, '') <> '' then
+    raise exception 'SECURITY REGRESSION: Non-downloadable PPTX path leaked in public_property_presentations';
+  end if;
+
   select count(*) into pub_obj_count
   from storage.objects
   where bucket_id = 'property-media-public' and name = 'LOT-TEST-PUB/images/pub.webp';
   if pub_obj_count <> 1 then
     raise exception 'SECURITY REGRESSION: anon could not read approved Published storage object';
+  end if;
+
+  select count(*) into pub_pres_obj_count
+  from storage.objects
+  where bucket_id = 'property-media-public' and name = 'LOT-TEST-PUB/presentations/deck.pdf';
+  if pub_pres_obj_count <> 1 then
+    raise exception 'SECURITY REGRESSION: anon could not read Public presentation PDF storage object';
   end if;
 
   select count(*) into stale_obj_count
@@ -233,12 +313,13 @@ set local role authenticated;
 do $$
 declare
   inq_read_count int;
+  raw_prop_count int;
   draft_count int;
   priv_doc_count int;
+  priv_pres_count int;
   priv_obj_count int;
   updated_rows int;
 begin
-  -- Non-admin authenticated user cannot read, update, or delete inquiries
   select count(*) into inq_read_count from public.inquiries;
   if inq_read_count <> 0 then
     raise exception 'SECURITY REGRESSION: non-admin authenticated user can SELECT inquiries';
@@ -250,8 +331,12 @@ begin
     raise exception 'SECURITY REGRESSION: non-admin authenticated user updated inquiries';
   end if;
 
-  -- Non-admin authenticated user cannot read Draft properties or Private storage/documents
-  select count(*) into draft_count from public.properties where lot_id = 'LOT-TEST-DRF';
+  select count(*) into raw_prop_count from public.properties;
+  if raw_prop_count <> 0 then
+    raise exception 'SECURITY REGRESSION: non-admin authenticated user can SELECT raw public.properties';
+  end if;
+
+  select count(*) into draft_count from public.public_properties where lot_id = 'LOT-TEST-DRF';
   if draft_count <> 0 then
     raise exception 'SECURITY REGRESSION: non-admin authenticated user can read Draft property';
   end if;
@@ -261,12 +346,16 @@ begin
     raise exception 'SECURITY REGRESSION: non-admin authenticated user can read Private document';
   end if;
 
+  select count(*) into priv_pres_count from public.property_presentations;
+  if priv_pres_count <> 0 then
+    raise exception 'SECURITY REGRESSION: non-admin authenticated user can read raw property_presentations';
+  end if;
+
   select count(*) into priv_obj_count from storage.objects where bucket_id = 'property-media-private';
   if priv_obj_count <> 0 then
     raise exception 'SECURITY REGRESSION: non-admin authenticated user can read property-media-private';
   end if;
 
-  -- Non-admin authenticated user cannot write to storage.objects
   begin
     insert into storage.objects (bucket_id, name)
     values ('property-media-public', 'LOT-TEST-PUB/images/evil.webp');
@@ -275,7 +364,6 @@ begin
     null;
   end;
 
-  -- Allowed inquiry columns succeed for Published lot, blocked for Draft lot
   insert into public.inquiries (property_lot_id, property_title, buyer_name, buyer_email, buyer_phone, message)
   values ('LOT-TEST-PUB', 'Published Regression Lot', 'Auth Buyer', 'auth.buyer@example.ph', '+63 917 444 5555', 'Testing authenticated non-admin inquiry.');
 
@@ -290,7 +378,7 @@ end $$;
 
 reset role;
 
--- 8. Verify unpublishing Published property demotes its media and immediately revokes public storage SELECT access
+-- 8. Verify unpublishing Published property demotes images, documents, AND presentations & revokes public storage SELECT access
 update public.properties
 set visibility = 'Draft', updated_at = now()
 where lot_id = 'LOT-TEST-PUB';
@@ -299,6 +387,7 @@ do $$
 declare
   leaked_pub_imgs int;
   leaked_pub_docs int;
+  leaked_pub_pres int;
 begin
   select count(*) into leaked_pub_imgs
   from public.property_images pi
@@ -317,6 +406,19 @@ begin
   if leaked_pub_docs <> 0 then
     raise exception 'SECURITY REGRESSION: Unpublishing did not demote property_documents to private bucket';
   end if;
+
+  select count(*) into leaked_pub_pres
+  from public.property_presentations pp
+  join public.properties p on p.id = pp.property_id
+  where p.lot_id = 'LOT-TEST-PUB'
+    and (
+      pp.pdf_storage_bucket = 'property-media-public'
+      or pp.pptx_storage_bucket = 'property-media-public'
+      or pp.cover_storage_bucket = 'property-media-public'
+    );
+  if leaked_pub_pres <> 0 then
+    raise exception 'SECURITY REGRESSION: Unpublishing did not demote property_presentations to private bucket';
+  end if;
 end $$;
 
 set local role anon;
@@ -324,12 +426,20 @@ set local role anon;
 do $$
 declare
   post_unpublish_obj_count int;
+  post_unpublish_pres_count int;
 begin
   select count(*) into post_unpublish_obj_count
   from storage.objects
   where bucket_id = 'property-media-public' and name = 'LOT-TEST-PUB/images/pub.webp';
   if post_unpublish_obj_count <> 0 then
     raise exception 'SECURITY REGRESSION: Previously published storage object stayed publicly readable after unpublish';
+  end if;
+
+  select count(*) into post_unpublish_pres_count
+  from storage.objects
+  where bucket_id = 'property-media-public' and name = 'LOT-TEST-PUB/presentations/deck.pdf';
+  if post_unpublish_pres_count <> 0 then
+    raise exception 'SECURITY REGRESSION: Previously published presentation PDF stayed publicly readable after unpublish';
   end if;
 end $$;
 

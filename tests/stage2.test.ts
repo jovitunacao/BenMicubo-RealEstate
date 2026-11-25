@@ -122,11 +122,12 @@ test('Updating a property price, description, or Sold status preserves its perma
   const originalUrl = buildCanonicalPropertyUrl(PRODUCTION_SITE_URL, target.lotId);
 
   const {id, updatedAt: _u, ...rest} = target;
+  const baseTotalPrice = target.priceTotalPhp ?? 0;
   // Attempt to mutate lotId in payload to verify backend/service locks existing lotId
   const mutatedInput: PropertyInput = {
     ...rest,
     lotId: 'LOT-999-SHOULD-BE-IGNORED',
-    priceTotalPhp: target.priceTotalPhp + 500000,
+    priceTotalPhp: baseTotalPrice + 500000,
     status: 'Sold',
     description: 'Updated price and marked Sold while keeping permanent QR board active.',
   };
@@ -134,7 +135,7 @@ test('Updating a property price, description, or Sold status preserves its perma
   const updated = await propertyService.updateProperty(id, mutatedInput);
   assert.equal(updated.lotId, target.lotId);
   assert.equal(updated.status, 'Sold');
-  assert.equal(updated.priceTotalPhp, target.priceTotalPhp + 500000);
+  assert.equal(updated.priceTotalPhp, baseTotalPrice + 500000);
   assert.equal(
     buildCanonicalPropertyUrl(PRODUCTION_SITE_URL, updated.lotId),
     originalUrl

@@ -4,7 +4,12 @@ import {AlertTriangle, ArrowLeft, MapPin, Phone, Printer, Settings} from 'lucide
 import {usePropertyStore} from '../context/PropertyStoreContext';
 import {CompanyLogo} from '../components/CompanyLogo';
 import {QRCodeCanvas} from '../components/QRCodeCanvas';
-import {formatPhp, formatSqm, shouldDisplayLotDimensions} from '../utils/format';
+import {
+  formatFrontageLength,
+  formatSqm,
+  hasVisibleFrontageLength,
+  resolvePropertyPricingDisplay,
+} from '../utils/format';
 import {buildDistributableQrUrl} from '../utils/siteUrl';
 
 export function SignagePrintPage() {
@@ -149,38 +154,57 @@ export function SignagePrintPage() {
               />
             </div>
 
-            <div className="w-full max-w-lg border-t border-b border-[#E6E6EF] py-5 grid grid-cols-1 sm:grid-cols-2 gap-4 text-left">
-              <div>
-                <p className="text-xs text-[#696B77]">
-                  {shouldDisplayLotDimensions(property) ? 'Lot Area & Dimensions' : 'Lot Area'}
-                </p>
-                <p className="mt-0.5 font-display text-lg font-bold text-[#202124] tabular-nums">
-                  {formatSqm(property.lotAreaSqm)}
-                </p>
-                {shouldDisplayLotDimensions(property) && (
-                  <p className="text-xs text-[#4B4D57] tabular-nums">{property.dimensions}</p>
-                )}
-              </div>
-              <div>
-                <p className="text-xs text-[#696B77]">Location</p>
-                <p className="mt-0.5 font-display text-base font-semibold text-[#202124] flex items-start gap-1.5">
-                  <MapPin className="w-4 h-4 text-[#6500B5] shrink-0 mt-0.5" />
-                  <span>
-                    {property.city}, {property.province}
-                  </span>
-                </p>
-                <p className="text-xs text-[#4B4D57] pl-5">{property.barangay}</p>
-              </div>
-            </div>
+            {(() => {
+              const hasFrontage = hasVisibleFrontageLength(property);
+              const frontageLabel = hasFrontage
+                ? formatFrontageLength(property.frontageLengthM)
+                : '';
+              const pricing = resolvePropertyPricingDisplay(property);
+              return (
+                <>
+                  <div className="w-full max-w-lg border-t border-b border-[#E6E6EF] py-5 grid grid-cols-1 sm:grid-cols-2 gap-4 text-left">
+                    <div>
+                      <p className="text-xs text-[#696B77]">
+                        {hasFrontage ? 'Lot Area & Frontage' : 'Lot Area'}
+                      </p>
+                      <p className="mt-0.5 font-display text-lg font-bold text-[#202124] tabular-nums">
+                        {formatSqm(property.lotAreaSqm)}
+                      </p>
+                      {hasFrontage && (
+                        <p className="text-xs text-[#4B4D57] tabular-nums">
+                          Frontage: {frontageLabel}
+                        </p>
+                      )}
+                    </div>
+                    <div>
+                      <p className="text-xs text-[#696B77]">Location</p>
+                      <p className="mt-0.5 font-display text-base font-semibold text-[#202124] flex items-start gap-1.5">
+                        <MapPin className="w-4 h-4 text-[#6500B5] shrink-0 mt-0.5" />
+                        <span>
+                          {property.city}, {property.province}
+                        </span>
+                      </p>
+                      <p className="text-xs text-[#4B4D57] pl-5">{property.barangay}</p>
+                    </div>
+                  </div>
 
-            {showPriceOnSign && (
-              <div className="mt-5">
-                <p className="text-xs text-[#696B77]">Selling Price</p>
-                <p className="font-display text-2xl font-bold text-[#6500B5] tabular-nums">
-                  {formatPhp(property.priceTotalPhp)}
-                </p>
-              </div>
-            )}
+                  {showPriceOnSign && (
+                    <div className="mt-5">
+                      <p className="text-xs text-[#696B77]">
+                        {pricing.isPriceUponRequest
+                          ? 'Pricing Inquiry'
+                          : pricing.showSellingPrice
+                            ? 'Selling Price'
+                            : 'Rate per Square Meter'}
+                      </p>
+                      <p className="font-display text-2xl font-bold text-[#6500B5] tabular-nums">
+                        {pricing.primaryHeadlineLabel}
+                      </p>
+                    </div>
+                  )}
+                </>
+              );
+            })()}
           </div>
 
           {/* Footer Contact Bar */}

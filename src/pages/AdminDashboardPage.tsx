@@ -984,8 +984,8 @@ export function AdminDashboardPage() {
                               <p className="font-semibold text-[#202124]">{item.title}</p>
                               <p className="text-[11px] text-[#696B77]">
                                 {item.city}, {item.province} · {item.classification} ·{' '}
-                                {item.images.length} photos ·{' '}
-                                {item.videos.length} videos · {item.documents.length} docs
+                                {item.images.length} photos · {item.videos.length} videos ·{' '}
+                                {item.documents.length} docs · {item.presentations?.length || 0} decks
                               </p>
                               {!assessCoordinateLocationConsistency(item.latitude, item.longitude, {
                                 barangay: item.barangay,
@@ -1007,10 +1007,21 @@ export function AdminDashboardPage() {
                               <p className="text-[11px] text-[#696B77]">
                                 {formatSqm(item.lotAreaSqm)} ·{' '}
                                 {formatPhp(
-                                  computePricePerSqm(item.priceTotalPhp, item.lotAreaSqm)
+                                  item.pricePerSqm ??
+                                    computePricePerSqm(item.priceTotalPhp, item.lotAreaSqm)
                                 )}
                                 /sqm
                               </p>
+                              {(!item.showSellingPrice || !item.showPricePerSqm) && (
+                                <p className="text-[10px] font-sans text-[#6500B5] mt-0.5">
+                                  Public:{' '}
+                                  {!item.showSellingPrice && !item.showPricePerSqm
+                                    ? 'Price Upon Request'
+                                    : !item.showSellingPrice
+                                      ? 'Rate/sqm Only'
+                                      : 'Total Only'}
+                                </p>
+                              )}
                             </td>
                             <td className="py-3 px-3 whitespace-nowrap">
                               <select
@@ -1477,6 +1488,7 @@ export function AdminDashboardPage() {
                           <th className="py-2.5 px-3">Photos</th>
                           <th className="py-2.5 px-3">Videos</th>
                           <th className="py-2.5 px-3">Documents</th>
+                          <th className="py-2.5 px-3">Presentations</th>
                           <th className="py-2.5 px-3 text-right">Manage</th>
                         </tr>
                       </thead>
@@ -1506,6 +1518,10 @@ export function AdminDashboardPage() {
                             <td className="py-2.5 px-3">
                               {prop.documents.filter((d) => d.visibility === 'Private').length} private /{' '}
                               {prop.documents.filter((d) => d.visibility === 'Public').length} public
+                            </td>
+                            <td className="py-2.5 px-3">
+                              {(prop.presentations || []).filter((p) => p.visibility === 'Public').length} public /{' '}
+                              {(prop.presentations || []).filter((p) => p.visibility === 'Private').length} private
                             </td>
                             <td className="py-2.5 px-3 text-right">
                               <button

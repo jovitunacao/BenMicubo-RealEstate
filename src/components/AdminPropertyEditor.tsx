@@ -11,9 +11,11 @@ import {
   FileText,
   GripVertical,
   HardDrive,
+  Image as ImageIcon,
   Lock,
   MapPin,
   Play,
+  Presentation,
   RefreshCw,
   Send,
   Star,
@@ -26,11 +28,13 @@ import {isSupabaseConfigured} from '../lib/supabase';
 import type {
   DocumentCategory,
   DocumentVisibility,
+  PresentationVisibility,
   Property,
   PropertyClassification,
   PropertyDocumentItem,
   PropertyImageItem,
   PropertyInput,
+  PropertyPresentationItem,
   PropertyStatus,
   PropertyVideoItem,
   PropertyVisibility,
@@ -40,16 +44,22 @@ import {
   computePricePerSqm,
   computeTotalPrice,
   formatFileSize,
+  formatFrontageLength,
   formatPhp,
   formatSqm,
   generateNextLotId,
+  resolvePropertyPricingDisplay,
 } from '../utils/format';
 import {parsePropertyVideoUrl} from '../utils/video';
 import {computeFileFingerprint, optimizePropertyImage} from '../utils/imageProcessor';
 import {
   getAuthorizedDocumentDownloadUrl,
+  getAuthorizedPresentationAssetUrl,
   uploadOptimizedPropertyImage,
+  uploadPresentationCoverImage,
   uploadPropertyDocumentFile,
+  uploadPropertyPresentationFile,
+  validatePresentationFile,
 } from '../services/storageService';
 import {
   sortImagesCoverFirst,
@@ -103,6 +113,24 @@ const DOCUMENT_CATEGORIES: DocumentCategory[] = [
   'PDF Brochure',
   'Other',
 ];
+
+async function detectPdfSlideCount(file: File): Promise<number | null> {
+  try {
+    const [pdfjs, workerModule, buf] = await Promise.all([
+      import('pdfjs-dist'),
+      import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+      file.arrayBuffer(),
+    ]);
+    pdfjs.GlobalWorkerOptions.workerSrc = workerModule.default;
+    const loadingTask = pdfjs.getDocument({data: new Uint8Array(buf)});
+    const pdfDoc = await loadingTask.promise;
+    const count = pdfDoc.numPages || null;
+    await (pdfDoc as {destroy?: () => Promise<void>}).destroy?.();
+    return count;
+  } catch {
+    return null;
+  }
+}
 
 export function AdminPropertyEditor({
   initialProperty,
@@ -194,10 +222,20 @@ export function AdminPropertyEditor({
   const [manualTotalPrice, setManualTotalPrice] = useState(
     String(initialProperty?.priceTotalPhp ?? 10000000)
   );
+  const [showSellingPrice, setShowSellingPrice] = useState<boolean>(
+    initialProperty?.showSellingPrice ?? true
+  );
+  const [showPricePerSqm, setShowPricePerSqm] = useState<boolean>(
+    initialProperty?.showPricePerSqm ?? true
+  );
   const [isNegotiable, setIsNegotiable] = useState(initialProperty?.isNegotiable ?? false);
-  const [dimensions, setDimensions] = useState(initialProperty?.dimensions ?? '');
-  const [showLotDimensions, setShowLotDimensions] = useState<boolean>(
-    initialProperty?.showLotDimensions ?? true
+  const [frontageLengthInput, setFrontageLengthInput] = useState<string>(() =>
+    initialProperty?.frontageLengthM !== null &&
+    initialProperty?.frontageLengthM !== undefined &&
+    Number.isFinite(initialProperty.frontageLengthM) &&
+    initialProperty.frontageLengthM > 0
+      ? String(initialProperty.frontageLengthM)
+      : ''
   );
   const [boundaryDescription, setBoundaryDescription] = useState(
     initialProperty?.boundaryDescription ?? ''
@@ -288,6 +326,26 @@ export function AdminPropertyEditor({
   const [docVisibility, setDocVisibility] = useState<DocumentVisibility>('Private');
   const [uploadingDoc, setUploadingDoc] = useState(false);
 
+  // Property Presentations (Supabase Storage Only — PPTX + PDF + Optional Cover)
+  const [presentations, setPresentations] = useState<PropertyPresentationItem[]>(() =>
+    [...(initialProperty?.presentations ?? [])].sort((a, b) => a.sortOrder - b.sortOrder)
+  );
+  const [newPresTitle, setNewPresTitle] = useState('');
+  const [newPresDesc, setNewPresDesc] = useState('');
+  const [newPresVisibility, setNewPresVisibility] =
+    useState<PresentationVisibility>('Private');
+  const [newPresAllowDownload, setNewPresAllowDownload] = useState(false);
+  const [newPresPdfFile, setNewPresPdfFile] = useState<File | null>(null);
+  const [newPresPptxFile, setNewPresPptxFile] = useState<File | null>(null);
+  const [newPresCoverFile, setNewPresCoverFile] = useState<File | null>(null);
+  const [uploadingPres, setUploadingPres] = useState(false);
+  const [presUploadProgress, setPresUploadProgress] = useState<{
+    percent: number;
+    stage: string;
+  } | null>(null);
+  const [presFeedback, setPresFeedback] = useState('');
+  const [presError, setPresError] = useState('');
+
   // Agent Defaults
   const [agentName, setAgentName] = useState(
     initialProperty?.agentName ?? siteSettings.defaultAgentName
@@ -362,6 +420,15 @@ export function AdminPropertyEditor({
         ? buildGoogleMapsPinUrl(coordCheck.latitude, coordCheck.longitude)
         : '');
 
+    const parsedFrontageRaw = frontageLengthInput.trim();
+    const parsedFrontage =
+      parsedFrontageRaw === '' ? null : Number(parsedFrontageRaw);
+
+    const normalizedPresentations = presentations.map((pres, idx) => ({
+      ...pres,
+      sortOrder: idx,
+    }));
+
     return {
       lotId: normalizedLotId,
       title: title.trim(),
@@ -371,11 +438,15 @@ export function AdminPropertyEditor({
       region: region.trim() || 'Philippines',
       completeLocation: resolvedCompleteLocation,
       lotAreaSqm: numericArea,
-      dimensions: dimensions.trim(),
-      showLotDimensions,
+      frontageLengthM:
+        parsedFrontage !== null && Number.isFinite(parsedFrontage) && parsedFrontage > 0
+          ? Number(parsedFrontage.toFixed(2))
+          : null,
       boundaryDescription: boundaryDescription.trim(),
       pricePerSqm: effectiveRatePerSqm,
       priceTotalPhp: effectiveTotalPrice,
+      showSellingPrice,
+      showPricePerSqm,
       isPriceManualOverride,
       isNegotiable,
       classification,
@@ -400,6 +471,7 @@ export function AdminPropertyEditor({
       youtubeUrl: normalizedVideos[0]?.url || '',
       videos: normalizedVideos,
       documents,
+      presentations: normalizedPresentations,
       latitude: resolvedLat,
       longitude: resolvedLng,
       googleMapsUrl: resolvedMapsUrl,
@@ -742,6 +814,263 @@ export function AdminPropertyEditor({
     }
   };
 
+  const handleAddPresentation = async () => {
+    setPresError('');
+    setPresFeedback('');
+    const trimmedTitle = newPresTitle.trim();
+    if (!trimmedTitle) {
+      setPresError('Enter a presentation title before attaching files.');
+      return;
+    }
+    if (!newPresPdfFile && !newPresPptxFile) {
+      setPresError('Attach at least a PDF presentation (.pdf) or PowerPoint deck (.pptx).');
+      return;
+    }
+
+    const targetLot = (isEditing && initialProperty ? initialProperty.lotId : lotId) || 'LOT-NEW';
+    setUploadingPres(true);
+    setPresUploadProgress({percent: 10, stage: 'Validating presentation files...'});
+
+    try {
+      if (newPresPdfFile) await validatePresentationFile(newPresPdfFile, 'pdf');
+      if (newPresPptxFile) await validatePresentationFile(newPresPptxFile, 'pptx');
+
+      let slideCount: number | null = null;
+      let pdfMeta = {
+        storageBucket: 'property-media-private' as 'property-media-private' | 'property-media-public',
+        storagePath: '',
+        fileName: '',
+        mimeType: '',
+        fileSizeBytes: 0,
+        dataUrl: undefined as string | undefined,
+      };
+      if (newPresPdfFile) {
+        setPresUploadProgress({percent: 22, stage: 'Inspecting slide count & uploading PDF...'});
+        slideCount = await detectPdfSlideCount(newPresPdfFile);
+        const uploadedPdf = await uploadPropertyPresentationFile(
+          targetLot,
+          newPresPdfFile,
+          'pdf',
+          (percent, stage) =>
+            setPresUploadProgress({percent: Math.min(55, Math.round(percent * 0.55)), stage})
+        );
+        pdfMeta = {
+          storageBucket: uploadedPdf.storageBucket,
+          storagePath: uploadedPdf.storagePath,
+          fileName: uploadedPdf.fileName,
+          mimeType: uploadedPdf.mimeType,
+          fileSizeBytes: uploadedPdf.fileSizeBytes,
+          dataUrl: uploadedPdf.dataUrl,
+        };
+      }
+
+      let pptxMeta = {
+        storageBucket: 'property-media-private' as 'property-media-private' | 'property-media-public',
+        storagePath: '',
+        fileName: '',
+        mimeType: '',
+        fileSizeBytes: 0,
+        dataUrl: undefined as string | undefined,
+      };
+      if (newPresPptxFile) {
+        setPresUploadProgress({percent: 60, stage: 'Uploading PowerPoint (.pptx)...'});
+        const uploadedPptx = await uploadPropertyPresentationFile(
+          targetLot,
+          newPresPptxFile,
+          'pptx',
+          (percent, stage) =>
+            setPresUploadProgress({
+              percent: 55 + Math.round(percent * 0.3),
+              stage,
+            })
+        );
+        pptxMeta = {
+          storageBucket: uploadedPptx.storageBucket,
+          storagePath: uploadedPptx.storagePath,
+          fileName: uploadedPptx.fileName,
+          mimeType: uploadedPptx.mimeType,
+          fileSizeBytes: uploadedPptx.fileSizeBytes,
+          dataUrl: uploadedPptx.dataUrl,
+        };
+      }
+
+      let coverMeta: {
+        storageBucket: 'property-media-private' | 'property-media-public';
+        storagePath: string;
+        url?: string;
+      } = {
+        storageBucket: 'property-media-private',
+        storagePath: '',
+      };
+      if (newPresCoverFile) {
+        setPresUploadProgress({percent: 88, stage: 'Optimizing optional cover image...'});
+        const optimizedCover = await optimizePropertyImage(newPresCoverFile);
+        coverMeta = await uploadPresentationCoverImage(
+          targetLot,
+          optimizedCover.blob,
+          optimizedCover.fileName,
+          optimizedCover.mimeType,
+          optimizedCover.dataUrl
+        );
+      }
+
+      const item: PropertyPresentationItem = {
+        id: `pres-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+        title: trimmedTitle,
+        description: newPresDesc.trim(),
+        visibility: newPresVisibility,
+        allowDownload: newPresAllowDownload,
+        sortOrder: presentations.length,
+        slideCount,
+        pdfStorageBucket: pdfMeta.storageBucket,
+        pdfStoragePath: pdfMeta.storagePath,
+        pdfFileName: pdfMeta.fileName,
+        pdfMimeType: pdfMeta.mimeType,
+        pdfFileSizeBytes: pdfMeta.fileSizeBytes,
+        pdfDataUrl: pdfMeta.dataUrl,
+        pptxStorageBucket: pptxMeta.storageBucket,
+        pptxStoragePath: pptxMeta.storagePath,
+        pptxFileName: pptxMeta.fileName,
+        pptxMimeType: pptxMeta.mimeType,
+        pptxFileSizeBytes: pptxMeta.fileSizeBytes,
+        pptxDataUrl: pptxMeta.dataUrl,
+        coverStorageBucket: coverMeta.storageBucket,
+        coverStoragePath: coverMeta.storagePath,
+        coverPublicUrl: coverMeta.url || undefined,
+        uploadedAt: new Date().toISOString(),
+      };
+
+      setPresentations((prev) => [...prev, item]);
+      setNewPresTitle('');
+      setNewPresDesc('');
+      setNewPresVisibility('Private');
+      setNewPresAllowDownload(false);
+      setNewPresPdfFile(null);
+      setNewPresPptxFile(null);
+      setNewPresCoverFile(null);
+      setPresFeedback(
+        `Staged "${item.title}" in private storage. Save the listing to persist and apply visibility.`
+      );
+    } catch (err) {
+      setPresError(err instanceof Error ? err.message : 'Unable to stage presentation.');
+    } finally {
+      setUploadingPres(false);
+      setPresUploadProgress(null);
+    }
+  };
+
+  const handleReplacePresentationFile = async (
+    targetId: string,
+    kind: 'pdf' | 'pptx' | 'cover',
+    file: File | undefined
+  ) => {
+    if (!file) return;
+    setPresError('');
+    setPresFeedback('');
+    const targetLot = (isEditing && initialProperty ? initialProperty.lotId : lotId) || 'LOT-NEW';
+    setUploadingPres(true);
+    setPresUploadProgress({
+      percent: 15,
+      stage: `Replacing ${kind.toUpperCase()} (${file.name})...`,
+    });
+
+    try {
+      if (kind === 'cover') {
+        const optimized = await optimizePropertyImage(file);
+        const uploaded = await uploadPresentationCoverImage(
+          targetLot,
+          optimized.blob,
+          optimized.fileName,
+          optimized.mimeType,
+          optimized.dataUrl,
+          (percent, stage) => setPresUploadProgress({percent, stage})
+        );
+        setPresentations((prev) =>
+          prev.map((item) =>
+            item.id === targetId
+              ? {
+                  ...item,
+                  coverStorageBucket: uploaded.storageBucket,
+                  coverStoragePath: uploaded.storagePath,
+                  coverPublicUrl: uploaded.url || undefined,
+                }
+              : item
+          )
+        );
+      } else {
+        const slideCount = kind === 'pdf' ? await detectPdfSlideCount(file) : null;
+        const uploaded = await uploadPropertyPresentationFile(
+          targetLot,
+          file,
+          kind,
+          (percent, stage) => setPresUploadProgress({percent, stage})
+        );
+        setPresentations((prev) =>
+          prev.map((item) => {
+            if (item.id !== targetId) return item;
+            if (kind === 'pdf') {
+              return {
+                ...item,
+                slideCount: slideCount ?? item.slideCount,
+                pdfStorageBucket: uploaded.storageBucket,
+                pdfStoragePath: uploaded.storagePath,
+                pdfFileName: uploaded.fileName,
+                pdfMimeType: uploaded.mimeType,
+                pdfFileSizeBytes: uploaded.fileSizeBytes,
+                pdfPublicUrl: undefined,
+                pdfDataUrl: uploaded.dataUrl,
+              };
+            }
+            return {
+              ...item,
+              pptxStorageBucket: uploaded.storageBucket,
+              pptxStoragePath: uploaded.storagePath,
+              pptxFileName: uploaded.fileName,
+              pptxMimeType: uploaded.mimeType,
+              pptxFileSizeBytes: uploaded.fileSizeBytes,
+              pptxPublicUrl: undefined,
+              pptxDataUrl: uploaded.dataUrl,
+            };
+          })
+        );
+      }
+      setPresFeedback(`Replaced ${kind.toUpperCase()} asset. Save listing to commit changes.`);
+    } catch (err) {
+      setPresError(err instanceof Error ? err.message : 'Unable to replace presentation file.');
+    } finally {
+      setUploadingPres(false);
+      setPresUploadProgress(null);
+    }
+  };
+
+  const handleMovePresentation = (index: number, direction: -1 | 1) => {
+    const nextIdx = index + direction;
+    if (nextIdx < 0 || nextIdx >= presentations.length) return;
+    setPresentations((prev) => {
+      const copy = [...prev];
+      const [moved] = copy.splice(index, 1);
+      copy.splice(nextIdx, 0, moved);
+      return copy.map((item, i) => ({...item, sortOrder: i}));
+    });
+  };
+
+  const handleDownloadAdminPresentation = async (
+    pres: PropertyPresentationItem,
+    kind: 'pdf' | 'pptx'
+  ) => {
+    try {
+      const url = await getAuthorizedPresentationAssetUrl(pres, kind, true);
+      const link = document.createElement('a');
+      link.href = url;
+      link.target = '_blank';
+      link.rel = 'noopener noreferrer';
+      link.download = kind === 'pdf' ? pres.pdfFileName : pres.pptxFileName;
+      link.click();
+    } catch (err) {
+      setPresError(err instanceof Error ? err.message : 'Unable to open presentation file.');
+    }
+  };
+
   const handleManualCoordinateChange = (nextLat: string, nextLng: string) => {
     setLatitude(nextLat);
     setLongitude(nextLng);
@@ -819,8 +1148,15 @@ export function AdminPropertyEditor({
       return;
     }
     if (numericArea <= 0) {
-      setError('Lot area (sqm) must be greater than 0.');
+      setError('Total Land Area (sqm) must be greater than 0.');
       return;
+    }
+    if (frontageLengthInput.trim() !== '') {
+      const parsedFrontage = Number(frontageLengthInput.trim());
+      if (!Number.isFinite(parsedFrontage) || parsedFrontage <= 0) {
+        setError('Frontage Length (meters) must be a positive number, or leave it blank.');
+        return;
+      }
     }
     if (effectiveTotalPrice < 0) {
       setError('Total selling price cannot be negative.');
@@ -1342,7 +1678,7 @@ export function AdminPropertyEditor({
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
           <div>
             <label className="block text-xs font-medium text-[#4B4D57] mb-1">
-              Land Area (sqm) *
+              Total Land Area (sqm) *
             </label>
             <input
               type="number"
@@ -1425,38 +1761,74 @@ export function AdminPropertyEditor({
           </label>
         </div>
 
-        <div className="p-3.5 rounded-lg border border-[#E6E6EF] bg-[#F8F8FC] space-y-1.5">
-          <label className="inline-flex items-center gap-2.5 text-xs font-semibold text-[#202124] cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showLotDimensions}
-              onChange={(e) => setShowLotDimensions(e.target.checked)}
-              className="accent-[#6500B5] w-4 h-4"
-            />
-            <span>Show Lot Dimensions on Public Listing</span>
-          </label>
-          <p className="text-[11px] text-[#4B4D57] pl-6 leading-relaxed">
-            Disable for irregularly shaped lots or properties where simple length × width measurements are not applicable.
+        {/* Independent Public Pricing Visibility Controls */}
+        <div className="p-4 rounded-lg border border-[#E6E6EF] bg-[#F8F8FC] space-y-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="text-xs font-bold text-[#202124]">
+              Public Pricing Visibility Controls
+            </span>
+            <span className="text-[11px] font-mono px-2.5 py-0.5 rounded bg-white border border-[#DCD0F0] text-[#6500B5]">
+              Public preview:{' '}
+              {(() => {
+                const previewPricing = resolvePropertyPricingDisplay({
+                  priceTotalPhp: effectiveTotalPrice,
+                  pricePerSqm: effectiveRatePerSqm,
+                  lotAreaSqm: numericArea,
+                  showSellingPrice,
+                  showPricePerSqm,
+                });
+                return previewPricing.secondarySubLabel
+                  ? `${previewPricing.primaryHeadlineLabel} · ${previewPricing.secondarySubLabel}`
+                  : previewPricing.primaryHeadlineLabel;
+              })()}
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-6 text-xs">
+            <label className="inline-flex items-center gap-2 font-medium text-[#202124] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showSellingPrice}
+                onChange={(e) => setShowSellingPrice(e.target.checked)}
+                className="accent-[#6500B5] w-4 h-4"
+              />
+              <span>Show Total Selling Price</span>
+            </label>
+
+            <label className="inline-flex items-center gap-2 font-medium text-[#202124] cursor-pointer">
+              <input
+                type="checkbox"
+                checked={showPricePerSqm}
+                onChange={(e) => setShowPricePerSqm(e.target.checked)}
+                className="accent-[#6500B5] w-4 h-4"
+              />
+              <span>Show Rate per Square Meter</span>
+            </label>
+          </div>
+
+          <p className="text-[11px] text-[#4B4D57] leading-relaxed">
+            Hidden pricing figures are omitted from public listings, A4 dossiers, signage, and unauthenticated public API responses (saving admin values safely in the database).{' '}
+            <strong>Advisory note:</strong> When Total Land Area and one pricing figure remain visible, visitors can mathematically estimate the other figure; disable both checkboxes to show <strong>Price Upon Request</strong>.
           </p>
         </div>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
           <div>
             <label className="block text-xs font-medium text-[#4B4D57] mb-1">
-              Lot Dimensions {showLotDimensions ? '(Optional)' : '(Hidden on Public Listing)'}
+              Frontage Length (meters) <span className="text-[#696B77] font-normal">(Optional)</span>
             </label>
             <input
-              type="text"
-              value={dimensions}
-              onChange={(e) => setDimensions(e.target.value)}
-              placeholder="e.g., 25m frontage × 48m depth"
-              className="w-full h-10 px-3 text-sm border border-[#D6D6E4] rounded-lg focus:outline-none focus:border-[#6500B5]"
+              type="number"
+              min="0.01"
+              step="0.01"
+              value={frontageLengthInput}
+              onChange={(e) => setFrontageLengthInput(e.target.value)}
+              placeholder="e.g., 25 or 24.5"
+              className="w-full h-10 px-3 font-mono text-sm tabular-nums border border-[#D6D6E4] rounded-lg focus:outline-none focus:border-[#6500B5]"
             />
-            {!showLotDimensions && (
-              <p className="mt-1 text-[11px] text-[#696B77]">
-                Saved value is preserved for admin reference and completely omitted from public listings, A4 dossiers, and QR signage.
-              </p>
-            )}
+            <p className="mt-1 text-[11px] text-[#696B77]">
+              Enter the verified frontage length in meters. Leave blank if unknown or not applicable.
+            </p>
           </div>
           <div>
             <label className="block text-xs font-medium text-[#4B4D57] mb-1">
@@ -2223,11 +2595,416 @@ export function AdminPropertyEditor({
         </div>
       </section>
 
-      {/* Section 7: Assigned Advisor */}
+      {/* Section 7: Property Presentations (PowerPoint .pptx + PDF + Optional Cover · Supabase Storage) */}
+      <section className="p-5 rounded-xl border border-[#E6E6EF] bg-white space-y-4">
+        <div className="pb-3 border-b border-[#EFEFF6]">
+          <h3 className="font-display text-sm font-bold text-[#202124]">
+            7. Property Presentations ({presentations.length}) · Supabase Storage Only
+          </h3>
+          <p className="text-xs text-[#696B77] mt-0.5">
+            Upload a browser-viewable <strong>PDF presentation</strong> (exported from PowerPoint) and/or source{' '}
+            <strong>.pptx</strong> file. All assets stage securely in{' '}
+            <code className="font-mono">property-media-private</code> and promote to{' '}
+            <code className="font-mono">property-media-public</code> only when set to <strong>Public</strong> on a Published listing.
+          </p>
+        </div>
+
+        <div className="p-3 rounded-lg border border-amber-200 bg-amber-50 text-[11px] text-amber-950 leading-relaxed">
+          <strong>Important Presentation Security Notice:</strong> Public browser slide previews render inside visitors&apos; browsers and are not guaranteed copy-proof (screenshots or screen recording remain possible). Leaving{' '}
+          <strong>Allow Download</strong> unchecked hides download controls and keeps raw <code className="font-mono">.pptx</code> files private. Macro-enabled files (<code className="font-mono">.pptm</code>, <code className="font-mono">vbaProject.bin</code>) and legacy <code className="font-mono">.ppt</code> are automatically rejected.
+        </div>
+
+        {presError && (
+          <div className="p-3 rounded-lg border border-red-200 bg-red-50 text-xs text-red-800 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-700 shrink-0 mt-0.5" />
+            <span>{presError}</span>
+          </div>
+        )}
+
+        {presFeedback && (
+          <p className="text-xs text-[#6500B5] bg-[#F3EEFA] border border-[#DCD0F0] rounded-lg px-3 py-2">
+            {presFeedback}
+          </p>
+        )}
+
+        {presUploadProgress && (
+          <div className="p-3 rounded-lg border border-[#DCD0F0] bg-[#F3EEFA] space-y-1.5">
+            <div className="flex items-center justify-between text-xs text-[#311A4D]">
+              <span className="font-medium truncate">{presUploadProgress.stage}</span>
+              <span className="font-mono font-semibold shrink-0">{presUploadProgress.percent}%</span>
+            </div>
+            <div className="h-1.5 w-full rounded-full bg-white overflow-hidden">
+              <div
+                className="h-full bg-[#6500B5] transition-all duration-150"
+                style={{width: `${presUploadProgress.percent}%`}}
+              />
+            </div>
+          </div>
+        )}
+
+        {presentations.length > 0 && (
+          <div className="space-y-3">
+            {presentations.map((pres, index) => (
+              <div
+                key={pres.id}
+                className="p-3.5 rounded-xl border border-[#E6E6EF] bg-[#F8F8FC] space-y-3"
+              >
+                <div className="flex flex-col sm:flex-row gap-3 items-start">
+                  <div className="w-28 aspect-[16/10] rounded-lg overflow-hidden border border-[#D6D6E4] bg-white shrink-0 flex items-center justify-center">
+                    {pres.coverPublicUrl ? (
+                      <PropertyImage
+                        src={pres.coverPublicUrl}
+                        alt={pres.title}
+                        compact
+                        className="w-full h-full object-cover"
+                      />
+                    ) : (
+                      <div className="text-center p-2 text-[#696B77]">
+                        <Presentation className="w-5 h-5 mx-auto text-[#6500B5] mb-0.5" />
+                        <span className="text-[10px] font-mono">
+                          {pres.slideCount ? `${pres.slideCount} slides` : 'Deck'}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex-1 min-w-0 space-y-2 w-full">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      <input
+                        type="text"
+                        value={pres.title}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setPresentations((prev) =>
+                            prev.map((item) =>
+                              item.id === pres.id ? {...item, title: val} : item
+                            )
+                          );
+                        }}
+                        placeholder="Presentation title..."
+                        className="w-full h-8 px-2.5 text-xs font-semibold bg-white border border-[#D6D6E4] rounded focus:outline-none focus:border-[#6500B5]"
+                      />
+                      <input
+                        type="text"
+                        value={pres.description}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setPresentations((prev) =>
+                            prev.map((item) =>
+                              item.id === pres.id ? {...item, description: val} : item
+                            )
+                          );
+                        }}
+                        placeholder="Optional presentation description..."
+                        className="w-full h-8 px-2.5 text-xs bg-white border border-[#D6D6E4] rounded focus:outline-none focus:border-[#6500B5]"
+                      />
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] font-mono text-[#4B4D57]">
+                      <span>
+                        PDF:{' '}
+                        {pres.pdfFileName
+                          ? `${pres.pdfFileName} (${formatFileSize(pres.pdfFileSizeBytes)})`
+                          : 'None'}
+                      </span>
+                      <span>
+                        PPTX:{' '}
+                        {pres.pptxFileName
+                          ? `${pres.pptxFileName} (${formatFileSize(pres.pptxFileSizeBytes)})`
+                          : 'None'}
+                      </span>
+                      {pres.slideCount ? <span>{pres.slideCount} slides</span> : null}
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                      <select
+                        aria-label={`Presentation visibility for ${pres.title}`}
+                        value={pres.visibility}
+                        onChange={(e) => {
+                          const nextVis = e.target.value as PresentationVisibility;
+                          setPresentations((prev) =>
+                            prev.map((item) =>
+                              item.id === pres.id ? {...item, visibility: nextVis} : item
+                            )
+                          );
+                        }}
+                        className={`h-7 px-2 font-medium rounded border focus:outline-none ${
+                          pres.visibility === 'Private'
+                            ? 'bg-amber-50 border-amber-200 text-amber-900'
+                            : 'bg-emerald-50 border-emerald-200 text-emerald-900'
+                        }`}
+                      >
+                        <option value="Private">Private (Admin Only)</option>
+                        <option value="Public">Public (Visitors Can View)</option>
+                      </select>
+
+                      <label className="inline-flex items-center gap-1.5 h-7 px-2.5 bg-white border border-[#D6D6E4] rounded cursor-pointer text-[#202124]">
+                        <input
+                          type="checkbox"
+                          checked={pres.allowDownload}
+                          onChange={(e) => {
+                            const nextAllow = e.target.checked;
+                            setPresentations((prev) =>
+                              prev.map((item) =>
+                                item.id === pres.id
+                                  ? {...item, allowDownload: nextAllow}
+                                  : item
+                              )
+                            );
+                          }}
+                          className="accent-[#6500B5]"
+                        />
+                        <span>Allow Downloads</span>
+                      </label>
+
+                      <label className="inline-flex items-center gap-1 h-7 px-2 bg-white border border-[#D6D6E4] rounded hover:border-[#6500B5] cursor-pointer">
+                        <RefreshCw className="w-3 h-3" />
+                        <span>{pres.pdfStoragePath ? 'Replace PDF' : 'Upload PDF'}</span>
+                        <input
+                          type="file"
+                          accept=".pdf,application/pdf"
+                          disabled={uploadingPres}
+                          onChange={(e) => {
+                            void handleReplacePresentationFile(
+                              pres.id,
+                              'pdf',
+                              e.target.files?.[0]
+                            );
+                            e.target.value = '';
+                          }}
+                          className="hidden"
+                        />
+                      </label>
+
+                      <label className="inline-flex items-center gap-1 h-7 px-2 bg-white border border-[#D6D6E4] rounded hover:border-[#6500B5] cursor-pointer">
+                        <RefreshCw className="w-3 h-3" />
+                        <span>{pres.pptxStoragePath ? 'Replace PPTX' : 'Upload PPTX'}</span>
+                        <input
+                          type="file"
+                          accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                          disabled={uploadingPres}
+                          onChange={(e) => {
+                            void handleReplacePresentationFile(
+                              pres.id,
+                              'pptx',
+                              e.target.files?.[0]
+                            );
+                            e.target.value = '';
+                          }}
+                          className="hidden"
+                        />
+                      </label>
+
+                      <label className="inline-flex items-center gap-1 h-7 px-2 bg-white border border-[#D6D6E4] rounded hover:border-[#6500B5] cursor-pointer">
+                        <ImageIcon className="w-3 h-3" />
+                        <span>{pres.coverStoragePath ? 'Replace Cover' : 'Add Cover'}</span>
+                        <input
+                          type="file"
+                          accept="image/jpeg,image/png,image/webp"
+                          disabled={uploadingPres}
+                          onChange={(e) => {
+                            void handleReplacePresentationFile(
+                              pres.id,
+                              'cover',
+                              e.target.files?.[0]
+                            );
+                            e.target.value = '';
+                          }}
+                          className="hidden"
+                        />
+                      </label>
+
+                      {pres.pdfStoragePath && (
+                        <button
+                          type="button"
+                          onClick={() => void handleDownloadAdminPresentation(pres, 'pdf')}
+                          className="h-7 px-2 bg-white border border-[#D6D6E4] rounded hover:border-[#6500B5] cursor-pointer"
+                        >
+                          Open PDF
+                        </button>
+                      )}
+                      {pres.pptxStoragePath && (
+                        <button
+                          type="button"
+                          onClick={() => void handleDownloadAdminPresentation(pres, 'pptx')}
+                          className="h-7 px-2 bg-white border border-[#D6D6E4] rounded hover:border-[#6500B5] cursor-pointer"
+                        >
+                          Open PPTX
+                        </button>
+                      )}
+
+                      <button
+                        type="button"
+                        disabled={index === 0}
+                        onClick={() => handleMovePresentation(index, -1)}
+                        aria-label="Move presentation up"
+                        className="w-7 h-7 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                      >
+                        <ArrowUp className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={index === presentations.length - 1}
+                        onClick={() => handleMovePresentation(index, 1)}
+                        aria-label="Move presentation down"
+                        className="w-7 h-7 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center disabled:opacity-40 cursor-pointer"
+                      >
+                        <ArrowDown className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setPresentations((prev) =>
+                            prev
+                              .filter((item) => item.id !== pres.id)
+                              .map((item, i) => ({...item, sortOrder: i}))
+                          );
+                        }}
+                        aria-label={`Remove presentation ${pres.title}`}
+                        className="w-7 h-7 bg-white border border-[#D6D6E4] rounded inline-flex items-center justify-center text-red-700 hover:bg-red-50 cursor-pointer"
+                      >
+                        <Trash2 className="w-3 h-3" />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* New Presentation Upload Composer */}
+        <div className="p-4 rounded-xl border border-dashed border-[#C5B3E6] bg-[#F8F8FC] space-y-3">
+          <p className="text-xs font-semibold text-[#202124]">
+            Attach New Property Presentation
+          </p>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-[11px] font-medium text-[#4B4D57] mb-1">
+                Presentation Title *
+              </label>
+              <input
+                type="text"
+                value={newPresTitle}
+                onChange={(e) => setNewPresTitle(e.target.value)}
+                placeholder="e.g., Investor Land Briefing & Development Concept"
+                className="w-full h-9 px-2.5 text-xs bg-white border border-[#D6D6E4] rounded-md focus:outline-none focus:border-[#6500B5]"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-medium text-[#4B4D57] mb-1">
+                Description (Optional)
+              </label>
+              <input
+                type="text"
+                value={newPresDesc}
+                onChange={(e) => setNewPresDesc(e.target.value)}
+                placeholder="e.g., Zoning overview, highway access, and subdivision concept"
+                className="w-full h-9 px-2.5 text-xs bg-white border border-[#D6D6E4] rounded-md focus:outline-none focus:border-[#6500B5]"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-xs">
+            <label className="block p-2.5 bg-white border border-[#D6D6E4] rounded-md cursor-pointer hover:border-[#6500B5]">
+              <span className="block text-[11px] font-semibold text-[#202124]">
+                PDF Presentation (.pdf)
+              </span>
+              <span className="block text-[11px] text-[#696B77] truncate mt-0.5">
+                {newPresPdfFile
+                  ? `${newPresPdfFile.name} (${formatFileSize(newPresPdfFile.size)})`
+                  : 'Required for in-page slide viewer (max 20 MB)'}
+              </span>
+              <input
+                type="file"
+                accept=".pdf,application/pdf"
+                disabled={uploadingPres}
+                onChange={(e) => setNewPresPdfFile(e.target.files?.[0] || null)}
+                className="hidden"
+              />
+            </label>
+
+            <label className="block p-2.5 bg-white border border-[#D6D6E4] rounded-md cursor-pointer hover:border-[#6500B5]">
+              <span className="block text-[11px] font-semibold text-[#202124]">
+                PowerPoint Source (.pptx)
+              </span>
+              <span className="block text-[11px] text-[#696B77] truncate mt-0.5">
+                {newPresPptxFile
+                  ? `${newPresPptxFile.name} (${formatFileSize(newPresPptxFile.size)})`
+                  : 'Optional .pptx archive / download (max 25 MB)'}
+              </span>
+              <input
+                type="file"
+                accept=".pptx,application/vnd.openxmlformats-officedocument.presentationml.presentation"
+                disabled={uploadingPres}
+                onChange={(e) => setNewPresPptxFile(e.target.files?.[0] || null)}
+                className="hidden"
+              />
+            </label>
+
+            <label className="block p-2.5 bg-white border border-[#D6D6E4] rounded-md cursor-pointer hover:border-[#6500B5]">
+              <span className="block text-[11px] font-semibold text-[#202124]">
+                Cover Image (Optional)
+              </span>
+              <span className="block text-[11px] text-[#696B77] truncate mt-0.5">
+                {newPresCoverFile
+                  ? `${newPresCoverFile.name} (${formatFileSize(newPresCoverFile.size)})`
+                  : 'JPG, PNG, or WebP cover card (max 5 MB)'}
+              </span>
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                disabled={uploadingPres}
+                onChange={(e) => setNewPresCoverFile(e.target.files?.[0] || null)}
+                className="hidden"
+              />
+            </label>
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div className="flex flex-wrap items-center gap-4 text-xs">
+              <select
+                aria-label="New presentation visibility"
+                value={newPresVisibility}
+                onChange={(e) =>
+                  setNewPresVisibility(e.target.value as PresentationVisibility)
+                }
+                className="h-9 px-2.5 text-xs bg-white border border-[#D6D6E4] rounded-md"
+              >
+                <option value="Private">Private (Admin Only · Default)</option>
+                <option value="Public">Public (Show on Published Page)</option>
+              </select>
+
+              <label className="inline-flex items-center gap-2 text-xs text-[#202124] cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={newPresAllowDownload}
+                  onChange={(e) => setNewPresAllowDownload(e.target.checked)}
+                  className="accent-[#6500B5]"
+                />
+                <span>Allow Presentation Downloads</span>
+              </label>
+            </div>
+
+            <button
+              type="button"
+              disabled={uploadingPres}
+              onClick={() => void handleAddPresentation()}
+              className="inline-flex items-center gap-1.5 h-9 px-4 text-xs font-medium text-white bg-[#6500B5] rounded-md hover:bg-[#540098] disabled:opacity-60 cursor-pointer"
+            >
+              <Upload className="w-3.5 h-3.5" />
+              <span>{uploadingPres ? 'Uploading...' : '+ Upload & Stage Presentation'}</span>
+            </button>
+          </div>
+        </div>
+      </section>
+
+      {/* Section 8: Assigned Advisor */}
       <section className="p-5 rounded-xl border border-[#E6E6EF] bg-white space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#EFEFF6]">
           <h3 className="font-display text-sm font-bold text-[#202124]">
-            7. Assigned Property Advisor
+            8. Assigned Property Advisor
           </h3>
           <span className="text-[11px] text-[#696B77]">
             Required before publishing (no placeholder defaults are used)
@@ -2434,29 +3211,51 @@ export function AdminPropertyEditor({
                 <StatusIndicator status={previewData.status} />
               </div>
 
-              <div className="flex flex-wrap items-baseline gap-6 border-y border-[#EFEFF6] py-4">
-                <div>
-                  <span className="text-xs text-[#696B77] block">Total Price</span>
-                  <span className="font-display text-2xl font-bold text-[#202124] tabular-nums">
-                    {formatPhp(previewData.priceTotalPhp)}
-                  </span>
-                  {previewData.isNegotiable && (
-                    <span className="ml-2 text-xs text-[#6500B5] font-medium">Negotiable</span>
-                  )}
-                </div>
-                <div>
-                  <span className="text-xs text-[#696B77] block">Price / sqm</span>
-                  <span className="font-mono text-base font-semibold text-[#6500B5] tabular-nums">
-                    {formatPhp(previewData.pricePerSqm)} / sqm
-                  </span>
-                </div>
-                <div>
-                  <span className="text-xs text-[#696B77] block">Lot Area</span>
-                  <span className="font-mono text-base font-semibold text-[#202124] tabular-nums">
-                    {formatSqm(previewData.lotAreaSqm)}
-                  </span>
-                </div>
-              </div>
+              {(() => {
+                const previewPricing = resolvePropertyPricingDisplay(previewData);
+                const frontageLabel = formatFrontageLength(previewData.frontageLengthM);
+                return (
+                  <div className="flex flex-wrap items-baseline gap-6 border-y border-[#EFEFF6] py-4">
+                    <div>
+                      <span className="text-xs text-[#696B77] block">
+                        {previewPricing.isPriceUponRequest
+                          ? 'Public Valuation Display'
+                          : previewPricing.showSellingPrice
+                            ? 'Public Total Price'
+                            : 'Public Rate / sqm'}
+                      </span>
+                      <span className="font-display text-2xl font-bold text-[#202124] tabular-nums">
+                        {previewPricing.primaryHeadlineLabel}
+                      </span>
+                      {previewData.isNegotiable && !previewPricing.isPriceUponRequest && (
+                        <span className="ml-2 text-xs text-[#6500B5] font-medium">Negotiable</span>
+                      )}
+                    </div>
+                    {previewPricing.secondarySubLabel && (
+                      <div>
+                        <span className="text-xs text-[#696B77] block">Public Rate / sqm</span>
+                        <span className="font-mono text-base font-semibold text-[#6500B5] tabular-nums">
+                          {previewPricing.secondarySubLabel}
+                        </span>
+                      </div>
+                    )}
+                    <div>
+                      <span className="text-xs text-[#696B77] block">Total Land Area</span>
+                      <span className="font-mono text-base font-semibold text-[#202124] tabular-nums">
+                        {formatSqm(previewData.lotAreaSqm)}
+                      </span>
+                    </div>
+                    {frontageLabel && (
+                      <div>
+                        <span className="text-xs text-[#696B77] block">Frontage Length</span>
+                        <span className="font-mono text-base font-semibold text-[#202124] tabular-nums">
+                          {frontageLabel}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
 
               <p className="text-sm text-[#4B4D57] leading-relaxed">{previewData.description}</p>
 
@@ -2486,6 +3285,13 @@ export function AdminPropertyEditor({
                   (Private admin-only docs:{' '}
                   <strong>{previewData.documents.filter((d) => d.visibility === 'Private').length}</strong>
                   )
+                </p>
+                <p>
+                  Presentations:{' '}
+                  <strong>{previewData.presentations.filter((p) => p.visibility === 'Public').length}</strong>{' '}
+                  public deck(s) ·{' '}
+                  <strong>{previewData.presentations.filter((p) => p.visibility === 'Private').length}</strong>{' '}
+                  private deck(s).
                 </p>
               </div>
             </div>

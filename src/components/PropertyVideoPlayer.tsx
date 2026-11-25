@@ -71,9 +71,6 @@ export function PropertyVideoPlayer({
   }, [isTheaterOpen]);
 
   const handleOpenFullscreen = async () => {
-    if (parsed && resolveVideoRenderMode(parsed.provider, isMobileDevice) === 'mobile_external_card') {
-      return;
-    }
     setIsPlaying(true);
     setIsTheaterOpen(true);
     try {
@@ -101,81 +98,9 @@ export function PropertyVideoPlayer({
 
   const isDrive = parsed.provider === 'google_drive';
   const renderMode = resolveVideoRenderMode(parsed.provider, isMobileDevice);
+  void renderMode;
   const posterSrc =
     parsed.thumbnailUrl && !thumbFailed ? parsed.thumbnailUrl : posterFallback;
-
-  // Mobile Google Drive Video Card: NEVER mounts a Drive iframe on mobile devices
-  if (renderMode === 'mobile_external_card') {
-    return (
-      <div className="w-full max-w-full min-w-0 space-y-2.5">
-        <a
-          href={parsed.canonicalUrl}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-label={`Watch Property Video: ${title} in Google Drive`}
-          className="group relative block aspect-video w-full max-w-full min-w-0 overflow-hidden border border-[#E2DDD3] bg-[#1C1B19] text-left focus-visible:outline-2 focus-visible:outline-[#B89B6A]"
-        >
-          {posterSrc ? (
-            <img
-              src={posterSrc}
-              alt={`${title} property video preview`}
-              loading="eager"
-              decoding="async"
-              referrerPolicy="no-referrer"
-              onError={() => setThumbFailed(true)}
-              className="block w-full h-full object-cover opacity-70 transition-transform duration-300 group-hover:scale-[1.02]"
-            />
-          ) : (
-            <div className="w-full h-full bg-gradient-to-br from-[#2B2721] via-[#1C1B19] to-[#141311]" />
-          )}
-
-          {/* Scrim overlay for clean contrast across any cover image */}
-          <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/45 to-black/35" />
-
-          {/* Top provider badge */}
-          <div className="absolute top-3 left-3 right-3 flex items-center justify-between gap-2 min-w-0 pointer-events-none">
-            <span className="inline-flex items-center gap-1.5 text-[11px] font-medium text-[#FAF8F4] bg-[#1C1B19]/80 border border-white/15 px-2.5 py-1 truncate">
-              <HardDrive className="w-3.5 h-3.5 text-[#B89B6A] shrink-0" />
-              <span className="truncate">Google Drive Video</span>
-            </span>
-            <span className="text-[10px] font-mono uppercase tracking-[0.1em] text-[#FAF8F4]/90 bg-[#1C1B19]/80 border border-white/15 px-2 py-1 shrink-0">
-              Native Player
-            </span>
-          </div>
-
-          {/* Centered Play CTA */}
-          <div className="absolute inset-0 flex flex-col items-center justify-center p-4 text-center">
-            <span className="inline-flex items-center gap-2.5 px-5 py-3 bg-[#FAF8F4] text-[#1C1B19] border border-[#B89B6A] shadow-md transition-transform duration-200 group-hover:scale-[1.03] group-active:scale-[0.98]">
-              <span className="w-8 h-8 rounded-full bg-[#B89B6A] text-[#1C1B19] flex items-center justify-center shrink-0">
-                <Play className="w-4 h-4 fill-current ml-0.5" />
-              </span>
-              <span className="text-xs sm:text-sm font-semibold tracking-wide">
-                Watch Property Video
-              </span>
-            </span>
-            <span className="mt-2.5 text-[11px] text-[#FAF8F4]/90 max-w-[30ch] leading-snug">
-              Opens in Google Drive with full mobile controls
-            </span>
-          </div>
-        </a>
-
-        <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-[#6B665E]">
-          <span className="min-w-0 leading-snug">
-            Hosted via {parsed.providerLabel} · Opens full-screen mobile player
-          </span>
-          <a
-            href={parsed.canonicalUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-1.5 font-medium text-[#1C1B19] hover:text-[#8A6D3B] hover:underline shrink-0"
-          >
-            <span>Open directly in {parsed.providerLabel}</span>
-            <ExternalLink className="w-3.5 h-3.5 text-[#8A6D3B]" />
-          </a>
-        </div>
-      </div>
-    );
-  }
 
   const renderIframe = (inModal = false) => (
     <iframe

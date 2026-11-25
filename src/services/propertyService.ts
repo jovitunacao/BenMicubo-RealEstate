@@ -11,6 +11,7 @@ import type {
   PropertyDocumentItem,
   PropertyImageItem,
   PropertyInput,
+  PropertyPresentationItem,
   PropertyStatus,
   PropertyVideoItem,
   PropertyVisibility,
@@ -29,6 +30,7 @@ import {
   PUBLIC_MEDIA_BUCKET,
   refreshPrivateImageSignedUrl,
   removeStoragePathsFromBucket,
+  resolvePresentationAssetBucket,
   type StorageBucketName,
 } from './storageService';
 
@@ -56,6 +58,17 @@ export function sortImagesCoverFirst(images: PropertyImageItem[]): PropertyImage
   }));
 }
 
+export function sortPresentations(
+  presentations: PropertyPresentationItem[] = []
+): PropertyPresentationItem[] {
+  return [...presentations]
+    .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+    .map((pres, idx) => ({
+      ...pres,
+      sortOrder: idx,
+    }));
+}
+
 export function validateImageEntriesForStorage(
   images: PropertyImageItem[] = [],
   requireSupabaseStoragePath = false
@@ -73,13 +86,72 @@ export function validateImageEntriesForStorage(
   }
 }
 
+export function validatePresentationEntriesForStorage(
+  presentations: PropertyPresentationItem[] = [],
+  requireSupabaseStoragePath = false
+): void {
+  for (const pres of presentations) {
+    if (!pres.title || !pres.title.trim()) {
+      throw new Error('Every property presentation must have a title.');
+    }
+    const paths = [pres.pdfStoragePath, pres.pptxStoragePath, pres.coverStoragePath];
+    for (const p of paths) {
+      if (p && p.includes('..')) {
+        throw new Error(`Invalid presentation storage path "${p}".`);
+      }
+    }
+    const hasPdf = Boolean((pres.pdfStoragePath || '').trim() || pres.pdfDataUrl);
+    const hasPptx = Boolean((pres.pptxStoragePath || '').trim() || pres.pptxDataUrl);
+    if (!hasPdf && !hasPptx) {
+      throw new Error(
+        `Presentation "${pres.title}" must include a PDF or PPTX file.`
+      );
+    }
+    if (
+      requireSupabaseStoragePath &&
+      !pres.pdfStoragePath.trim() &&
+      !pres.pptxStoragePath.trim()
+    ) {
+      throw new Error(
+        `Presentation "${pres.title}" must be uploaded to Supabase Storage.`
+      );
+    }
+  }
+}
+
+export function parseOptionalFrontageLength(raw: unknown): number | null {
+  if (raw === null || raw === undefined || raw === '') return null;
+  const num = Number(raw);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  return Number(num.toFixed(2));
+}
+
 export function normalizeProperty(raw: Partial<Property> & {id: string; lotId: string}): Property {
   const lotAreaSqm = Number(raw.lotAreaSqm) || 1;
-  const priceTotalPhp = Number(raw.priceTotalPhp) || 0;
+  const showSellingPrice =
+    raw.showSellingPrice === undefined ? true : Boolean(raw.showSellingPrice);
+  const showPricePerSqm =
+    raw.showPricePerSqm === undefined ? true : Boolean(raw.showPricePerSqm);
+
+  const rawTotal = raw.priceTotalPhp;
+  const priceTotalPhp =
+    rawTotal === null || rawTotal === undefined || !Number.isFinite(Number(rawTotal))
+      ? showSellingPrice
+        ? 0
+        : null
+      : Number(rawTotal);
+
+  const rawRate = raw.pricePerSqm;
   const pricePerSqm =
-    raw.pricePerSqm !== undefined && raw.pricePerSqm >= 0
-      ? Number(raw.pricePerSqm)
-      : computePricePerSqm(priceTotalPhp, lotAreaSqm);
+    rawRate === null || rawRate === undefined || !Number.isFinite(Number(rawRate))
+      ? showPricePerSqm && priceTotalPhp !== null
+        ? computePricePerSqm(priceTotalPhp, lotAreaSqm)
+        : null
+      : Number(rawRate) >= 0
+        ? Number(rawRate)
+        : showPricePerSqm && priceTotalPhp !== null
+          ? computePricePerSqm(priceTotalPhp, lotAreaSqm)
+          : null;
 
   const visibility: PropertyVisibility =
     raw.visibility || (raw.isArchived ? 'Archived' : 'Published');
@@ -127,6 +199,8 @@ export function normalizeProperty(raw: Partial<Property> & {id: string; lotId: s
     };
   });
 
+  const presentations = sortPresentations(raw.presentations || []);
+
   return {
     id: raw.id,
     lotId: raw.lotId.trim().toUpperCase(),
@@ -139,12 +213,13 @@ export function normalizeProperty(raw: Partial<Property> & {id: string; lotId: s
       raw.completeLocation ||
       [raw.barangay, raw.city, raw.province].filter(Boolean).join(', '),
     lotAreaSqm,
+    frontageLengthM: parseOptionalFrontageLength(raw.frontageLengthM),
     dimensions: raw.dimensions || '',
-    showLotDimensions:
-      raw.showLotDimensions === undefined ? true : Boolean(raw.showLotDimensions),
     boundaryDescription: raw.boundaryDescription || '',
     pricePerSqm,
     priceTotalPhp,
+    showSellingPrice,
+    showPricePerSqm,
     isPriceManualOverride: Boolean(raw.isPriceManualOverride),
     isNegotiable: Boolean(raw.isNegotiable),
     classification: raw.classification || 'Residential',
@@ -166,12 +241,19 @@ export function normalizeProperty(raw: Partial<Property> & {id: string; lotId: s
     youtubeUrl: videos[0]?.url || raw.youtubeUrl || '',
     videos,
     documents: raw.documents || [],
+    presentations,
     latitude:
-      raw.latitude !== undefined && raw.latitude !== null && raw.latitude !== ('' as unknown) && Number.isFinite(Number(raw.latitude))
+      raw.latitude !== undefined &&
+      raw.latitude !== null &&
+      raw.latitude !== ('' as unknown) &&
+      Number.isFinite(Number(raw.latitude))
         ? Number(raw.latitude)
         : Number.NaN,
     longitude:
-      raw.longitude !== undefined && raw.longitude !== null && raw.longitude !== ('' as unknown) && Number.isFinite(Number(raw.longitude))
+      raw.longitude !== undefined &&
+      raw.longitude !== null &&
+      raw.longitude !== ('' as unknown) &&
+      Number.isFinite(Number(raw.longitude))
         ? Number(raw.longitude)
         : Number.NaN,
     googleMapsUrl: raw.googleMapsUrl || '',
@@ -181,6 +263,48 @@ export function normalizeProperty(raw: Partial<Property> & {id: string; lotId: s
     agentMessenger: (raw.agentMessenger || '').trim(),
     publishedAt: raw.publishedAt,
     updatedAt: raw.updatedAt || new Date().toISOString(),
+  };
+}
+
+/**
+ * Strips all private media, non-public documents, private presentations,
+ * non-downloadable PPTX paths, legacy dimensions, and disabled pricing figures
+ * from public property projections.
+ */
+export function redactPropertyForPublicResponse(property: Property): Property {
+  const publicImages = property.images.filter(
+    (img) => img.isApprovedPublic && img.storageBucket === PUBLIC_MEDIA_BUCKET
+  );
+  const publicDocs = property.documents.filter(
+    (doc) => doc.visibility === 'Public'
+  );
+  const publicPresentations = sortPresentations(
+    (property.presentations || [])
+      .filter((p) => p.visibility === 'Public')
+      .map((p) => ({
+        ...p,
+        pdfFileName: p.allowDownload ? p.pdfFileName : '',
+        pdfFileSizeBytes: p.allowDownload ? p.pdfFileSizeBytes : 0,
+        pptxStorageBucket: p.allowDownload ? p.pptxStorageBucket : PRIVATE_MEDIA_BUCKET,
+        pptxStoragePath: p.allowDownload ? p.pptxStoragePath : '',
+        pptxFileName: p.allowDownload ? p.pptxFileName : '',
+        pptxMimeType: p.allowDownload ? p.pptxMimeType : '',
+        pptxFileSizeBytes: p.allowDownload ? p.pptxFileSizeBytes : 0,
+        pptxPublicUrl: p.allowDownload ? p.pptxPublicUrl : undefined,
+        pptxDataUrl: p.allowDownload ? p.pptxDataUrl : undefined,
+      }))
+  );
+
+  return {
+    ...property,
+    dimensions: '',
+    priceTotalPhp: property.showSellingPrice ? property.priceTotalPhp : null,
+    pricePerSqm: property.showPricePerSqm ? property.pricePerSqm : null,
+    isPriceManualOverride: false,
+    images: publicImages,
+    photos: publicImages.length > 0 ? publicImages.map((i) => i.url) : [],
+    documents: publicDocs,
+    presentations: publicPresentations,
   };
 }
 
@@ -197,7 +321,14 @@ export function validatePropertyForPublish(
   if (!input.lotAreaSqm || input.lotAreaSqm <= 0) {
     errors.push('Lot area (sqm) must be greater than 0.');
   }
-  if (input.priceTotalPhp < 0) {
+  if (
+    input.frontageLengthM !== null &&
+    input.frontageLengthM !== undefined &&
+    (!Number.isFinite(input.frontageLengthM) || input.frontageLengthM <= 0)
+  ) {
+    errors.push('Frontage length (meters) must be a positive number when provided.');
+  }
+  if (input.priceTotalPhp !== null && input.priceTotalPhp < 0) {
     errors.push('Total selling price cannot be negative.');
   }
   if (!input.description || input.description.trim().length < 10) {
@@ -282,6 +413,14 @@ export function filterPublicDocuments(documents: PropertyDocumentItem[]): Proper
   return documents.filter((doc) => doc.visibility === 'Public');
 }
 
+export function filterPublicPresentations(
+  presentations: PropertyPresentationItem[] = []
+): PropertyPresentationItem[] {
+  return sortPresentations(
+    presentations.filter((pres) => pres.visibility === 'Public')
+  );
+}
+
 function readDemoProperties(): Property[] {
   try {
     const raw = localStorage.getItem(PROPERTIES_STORAGE_KEY);
@@ -352,6 +491,32 @@ function writeLocalSettings(settings: SiteSettings): void {
   }
 }
 
+interface SupabasePresentationRow {
+  id: string;
+  property_id: string;
+  title: string;
+  description: string;
+  visibility: PropertyPresentationItem['visibility'];
+  allow_download: boolean;
+  sort_order: number;
+  slide_count: number | null;
+  pdf_storage_bucket: StorageBucketName;
+  pdf_storage_path: string;
+  pdf_file_name: string;
+  pdf_mime_type: string;
+  pdf_file_size_bytes: number;
+  pptx_storage_bucket: StorageBucketName;
+  pptx_storage_path: string;
+  pptx_file_name: string;
+  pptx_mime_type: string;
+  pptx_file_size_bytes: number;
+  cover_storage_bucket: StorageBucketName;
+  cover_storage_path: string;
+  cover_public_url: string;
+  created_at: string;
+  updated_at?: string;
+}
+
 interface SupabasePropertyRow {
   id: string;
   lot_id: string;
@@ -362,11 +527,13 @@ interface SupabasePropertyRow {
   region: string;
   complete_location?: string;
   lot_area_sqm: number;
-  dimensions: string;
-  show_lot_dimensions?: boolean;
+  frontage_length_m?: number | null;
+  dimensions?: string;
   boundary_description?: string;
-  price_per_sqm?: number;
-  price_total_php: number;
+  price_per_sqm?: number | null;
+  price_total_php: number | null;
+  show_selling_price?: boolean;
+  show_price_per_sqm?: boolean;
   is_price_manual_override?: boolean;
   is_negotiable?: boolean;
   classification: Property['classification'];
@@ -396,6 +563,7 @@ interface SupabasePropertyRow {
   updated_at: string;
   property_images?: Array<{
     id: string;
+    property_id?: string;
     storage_bucket: StorageBucketName;
     storage_path: string;
     public_url: string;
@@ -406,6 +574,7 @@ interface SupabasePropertyRow {
   }>;
   property_videos?: Array<{
     id: string;
+    property_id?: string;
     source_type: 'youtube' | 'google_drive' | 'direct';
     youtube_url: string;
     title: string;
@@ -414,6 +583,7 @@ interface SupabasePropertyRow {
   }>;
   property_documents?: Array<{
     id: string;
+    property_id?: string;
     title: string;
     category: PropertyDocumentItem['category'];
     visibility: PropertyDocumentItem['visibility'];
@@ -424,9 +594,52 @@ interface SupabasePropertyRow {
     file_size_bytes: number;
     created_at: string;
   }>;
+  property_presentations?: SupabasePresentationRow[];
 }
 
-function mapRowToProperty(row: SupabasePropertyRow): Property {
+function mapPresentationRow(
+  row: SupabasePresentationRow,
+  client?: NonNullable<SupabaseClientLike>
+): PropertyPresentationItem {
+  const getPub = (bucket: StorageBucketName, path: string): string | undefined => {
+    if (bucket !== PUBLIC_MEDIA_BUCKET || !path || !client) return undefined;
+    return client.storage.from(PUBLIC_MEDIA_BUCKET).getPublicUrl(path).data.publicUrl;
+  };
+
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description || '',
+    visibility: row.visibility,
+    allowDownload: Boolean(row.allow_download),
+    sortOrder: row.sort_order ?? 0,
+    slideCount: row.slide_count ?? null,
+    pdfStorageBucket: row.pdf_storage_bucket,
+    pdfStoragePath: row.pdf_storage_path || '',
+    pdfFileName: row.pdf_file_name || '',
+    pdfMimeType: row.pdf_mime_type || '',
+    pdfFileSizeBytes: Number(row.pdf_file_size_bytes) || 0,
+    pdfPublicUrl: getPub(row.pdf_storage_bucket, row.pdf_storage_path),
+    pptxStorageBucket: row.pptx_storage_bucket,
+    pptxStoragePath: row.pptx_storage_path || '',
+    pptxFileName: row.pptx_file_name || '',
+    pptxMimeType: row.pptx_mime_type || '',
+    pptxFileSizeBytes: Number(row.pptx_file_size_bytes) || 0,
+    pptxPublicUrl: row.allow_download
+      ? getPub(row.pptx_storage_bucket, row.pptx_storage_path)
+      : undefined,
+    coverStorageBucket: row.cover_storage_bucket,
+    coverStoragePath: row.cover_storage_path || '',
+    coverPublicUrl:
+      row.cover_public_url || getPub(row.cover_storage_bucket, row.cover_storage_path) || '',
+    uploadedAt: row.created_at,
+  };
+}
+
+function mapRowToProperty(
+  row: SupabasePropertyRow,
+  client?: NonNullable<SupabaseClientLike>
+): Property {
   const images: PropertyImageItem[] = (row.property_images || []).map((img) => ({
     id: img.id,
     url: img.public_url,
@@ -460,6 +673,19 @@ function mapRowToProperty(row: SupabasePropertyRow): Property {
     uploadedAt: d.created_at,
   }));
 
+  const presentations: PropertyPresentationItem[] = (
+    row.property_presentations || []
+  ).map((p) => mapPresentationRow(p, client));
+
+  const showSellingPrice =
+    row.show_selling_price === undefined || row.show_selling_price === null
+      ? true
+      : Boolean(row.show_selling_price);
+  const showPricePerSqm =
+    row.show_price_per_sqm === undefined || row.show_price_per_sqm === null
+      ? true
+      : Boolean(row.show_price_per_sqm);
+
   return normalizeProperty({
     id: row.id,
     lotId: row.lot_id,
@@ -470,15 +696,19 @@ function mapRowToProperty(row: SupabasePropertyRow): Property {
     region: row.region,
     completeLocation: row.complete_location || '',
     lotAreaSqm: Number(row.lot_area_sqm),
-    dimensions: row.dimensions,
-    showLotDimensions:
-      row.show_lot_dimensions === undefined || row.show_lot_dimensions === null
-        ? true
-        : Boolean(row.show_lot_dimensions),
+    frontageLengthM: parseOptionalFrontageLength(row.frontage_length_m),
+    dimensions: row.dimensions || '',
     boundaryDescription: row.boundary_description || '',
     pricePerSqm:
-      row.price_per_sqm !== undefined ? Number(row.price_per_sqm) : undefined,
-    priceTotalPhp: Number(row.price_total_php),
+      row.price_per_sqm !== undefined && row.price_per_sqm !== null
+        ? Number(row.price_per_sqm)
+        : null,
+    priceTotalPhp:
+      row.price_total_php !== undefined && row.price_total_php !== null
+        ? Number(row.price_total_php)
+        : null,
+    showSellingPrice,
+    showPricePerSqm,
     isPriceManualOverride: Boolean(row.is_price_manual_override),
     isNegotiable: Boolean(row.is_negotiable),
     classification: row.classification,
@@ -500,6 +730,7 @@ function mapRowToProperty(row: SupabasePropertyRow): Property {
     youtubeUrl: row.youtube_url || '',
     videos,
     documents,
+    presentations,
     latitude: Number(row.latitude),
     longitude: Number(row.longitude),
     googleMapsUrl: row.google_maps_url,
@@ -527,12 +758,14 @@ function mapPropertyToRow(input: PropertyInput) {
     region: input.region,
     complete_location: input.completeLocation,
     lot_area_sqm: input.lotAreaSqm,
-    dimensions: input.dimensions,
-    show_lot_dimensions:
-      input.showLotDimensions === undefined ? true : Boolean(input.showLotDimensions),
+    frontage_length_m: parseOptionalFrontageLength(input.frontageLengthM),
     boundary_description: input.boundaryDescription,
-    price_per_sqm: input.pricePerSqm,
-    price_total_php: input.priceTotalPhp,
+    price_per_sqm: input.pricePerSqm ?? 0,
+    price_total_php: input.priceTotalPhp ?? 0,
+    show_selling_price:
+      input.showSellingPrice === undefined ? true : Boolean(input.showSellingPrice),
+    show_price_per_sqm:
+      input.showPricePerSqm === undefined ? true : Boolean(input.showPricePerSqm),
     is_price_manual_override: input.isPriceManualOverride,
     is_negotiable: input.isNegotiable,
     classification: input.classification,
@@ -578,6 +811,7 @@ interface PreviousRelationsSnapshot {
   images: Array<Record<string, unknown>>;
   videos: Array<Record<string, unknown>>;
   documents: Array<Record<string, unknown>>;
+  presentations: Array<Record<string, unknown>>;
 }
 
 function nextOptimisticTimestamp(previousTimestamp?: string | null): string {
@@ -607,11 +841,12 @@ async function restorePropertyRowSnapshot(
         region: prevRow.region,
         complete_location: prevRow.complete_location || '',
         lot_area_sqm: prevRow.lot_area_sqm,
-        dimensions: prevRow.dimensions,
-        show_lot_dimensions: prevRow.show_lot_dimensions ?? true,
+        frontage_length_m: prevRow.frontage_length_m ?? null,
         boundary_description: prevRow.boundary_description || '',
         price_per_sqm: prevRow.price_per_sqm ?? 0,
-        price_total_php: prevRow.price_total_php,
+        price_total_php: prevRow.price_total_php ?? 0,
+        show_selling_price: prevRow.show_selling_price ?? true,
+        show_price_per_sqm: prevRow.show_price_per_sqm ?? true,
         is_price_manual_override: Boolean(prevRow.is_price_manual_override),
         is_negotiable: Boolean(prevRow.is_negotiable),
         classification: prevRow.classification,
@@ -672,13 +907,20 @@ async function restoreRelationsSnapshot(
     if (snapshot.documents.length > 0) {
       await client.from('property_documents').insert(snapshot.documents);
     }
+    await client.from('property_presentations').delete().eq('property_id', propertyId);
+    if (snapshot.presentations.length > 0) {
+      await client.from('property_presentations').insert(snapshot.presentations);
+    }
   } catch {
     // Best-effort compensating rollback
   }
 }
 
 function collectActiveStoragePaths(
-  input: Pick<PropertyInput, 'images' | 'documents' | 'visibility' | 'isArchived'>
+  input: Pick<
+    PropertyInput,
+    'images' | 'documents' | 'presentations' | 'visibility' | 'isArchived'
+  >
 ): {activePublicPaths: Set<string>; activePrivatePaths: Set<string>} {
   const isPublished = input.visibility === 'Published' && !input.isArchived;
   const activePublicPaths = new Set<string>();
@@ -698,12 +940,39 @@ function collectActiveStoragePaths(
     if (isPublic) activePublicPaths.add(doc.storagePath);
     else activePrivatePaths.add(doc.storagePath);
   }
+  for (const pres of input.presentations || []) {
+    if (pres.pdfStoragePath) {
+      const pdfPublic =
+        isPublished &&
+        pres.visibility === 'Public' &&
+        pres.pdfStorageBucket === PUBLIC_MEDIA_BUCKET;
+      if (pdfPublic) activePublicPaths.add(pres.pdfStoragePath);
+      else activePrivatePaths.add(pres.pdfStoragePath);
+    }
+    if (pres.pptxStoragePath) {
+      const pptxPublic =
+        isPublished &&
+        pres.visibility === 'Public' &&
+        pres.allowDownload &&
+        pres.pptxStorageBucket === PUBLIC_MEDIA_BUCKET;
+      if (pptxPublic) activePublicPaths.add(pres.pptxStoragePath);
+      else activePrivatePaths.add(pres.pptxStoragePath);
+    }
+    if (pres.coverStoragePath) {
+      const coverPublic =
+        isPublished &&
+        pres.visibility === 'Public' &&
+        pres.coverStorageBucket === PUBLIC_MEDIA_BUCKET;
+      if (coverPublic) activePublicPaths.add(pres.coverStoragePath);
+      else activePrivatePaths.add(pres.coverStoragePath);
+    }
+  }
 
   return {activePublicPaths, activePrivatePaths};
 }
 
 /**
- * Ensures Storage files still referenced by another property record (or still active in the bucket)
+ * Ensures Storage files still referenced by another property record
  * are NEVER deleted when cleaning up orphans or deleting a property.
  */
 async function findDeletableStoragePaths(
@@ -717,7 +986,13 @@ async function findDeletableStoragePaths(
   );
   if (uniquePaths.length === 0) return [];
 
-  const [{data: imgRefs, error: imgErr}, {data: docRefs, error: docErr}] = await Promise.all([
+  const [
+    {data: imgRefs, error: imgErr},
+    {data: docRefs, error: docErr},
+    {data: presPdfRefs, error: presPdfErr},
+    {data: presPptxRefs, error: presPptxErr},
+    {data: presCoverRefs, error: presCoverErr},
+  ] = await Promise.all([
     client
       .from('property_images')
       .select('property_id, storage_bucket, storage_path')
@@ -726,29 +1001,76 @@ async function findDeletableStoragePaths(
       .from('property_documents')
       .select('property_id, storage_bucket, storage_path')
       .in('storage_path', uniquePaths),
+    client
+      .from('property_presentations')
+      .select('property_id, pdf_storage_bucket, pdf_storage_path')
+      .in('pdf_storage_path', uniquePaths),
+    client
+      .from('property_presentations')
+      .select('property_id, pptx_storage_bucket, pptx_storage_path')
+      .in('pptx_storage_path', uniquePaths),
+    client
+      .from('property_presentations')
+      .select('property_id, cover_storage_bucket, cover_storage_path')
+      .in('cover_storage_path', uniquePaths),
   ]);
 
-  if (imgErr || docErr) {
-    // Fail safe: do not delete files if reference verification fails
+  if (imgErr || docErr || presPdfErr || presPptxErr || presCoverErr) {
     return [];
   }
 
-  const protectedPaths = new Set<string>();
-  const allRefs = [...(imgRefs || []), ...(docRefs || [])] as Array<{
+  const normalizedRefs: Array<{
     property_id: string;
     storage_bucket: StorageBucketName;
     storage_path: string;
-  }>;
+  }> = [
+    ...((imgRefs || []) as Array<{
+      property_id: string;
+      storage_bucket: StorageBucketName;
+      storage_path: string;
+    }>),
+    ...((docRefs || []) as Array<{
+      property_id: string;
+      storage_bucket: StorageBucketName;
+      storage_path: string;
+    }>),
+    ...((presPdfRefs || []) as Array<{
+      property_id: string;
+      pdf_storage_bucket: StorageBucketName;
+      pdf_storage_path: string;
+    }>).map((r) => ({
+      property_id: r.property_id,
+      storage_bucket: r.pdf_storage_bucket,
+      storage_path: r.pdf_storage_path,
+    })),
+    ...((presPptxRefs || []) as Array<{
+      property_id: string;
+      pptx_storage_bucket: StorageBucketName;
+      pptx_storage_path: string;
+    }>).map((r) => ({
+      property_id: r.property_id,
+      storage_bucket: r.pptx_storage_bucket,
+      storage_path: r.pptx_storage_path,
+    })),
+    ...((presCoverRefs || []) as Array<{
+      property_id: string;
+      cover_storage_bucket: StorageBucketName;
+      cover_storage_path: string;
+    }>).map((r) => ({
+      property_id: r.property_id,
+      storage_bucket: r.cover_storage_bucket,
+      storage_path: r.cover_storage_path,
+    })),
+  ];
 
-  for (const row of allRefs) {
+  const protectedPaths = new Set<string>();
+  for (const row of normalizedRefs) {
     if (!row.storage_path) continue;
     if (bucket === PUBLIC_MEDIA_BUCKET) {
       if (row.storage_bucket === PUBLIC_MEDIA_BUCKET) {
         protectedPaths.add(row.storage_path);
       }
     } else {
-      // In private bucket: protect if stored in private bucket on ANY property,
-      // OR if referenced by ANY OTHER property regardless of bucket.
       if (
         row.storage_bucket === PRIVATE_MEDIA_BUCKET ||
         !currentPropertyId ||
@@ -771,7 +1093,7 @@ async function syncPropertyRelationsInSupabase(
   const client = resolveSupabaseClient(clientOverride);
   if (!client) return {orphanPublicPaths: [], orphanPrivatePaths: [], redundantPrivatePaths: []};
 
-  const [{data: prevImgs}, {data: prevDocs}] = await Promise.all([
+  const [{data: prevImgs}, {data: prevDocs}, {data: prevPres}] = await Promise.all([
     client
       .from('property_images')
       .select('storage_bucket, storage_path')
@@ -780,34 +1102,62 @@ async function syncPropertyRelationsInSupabase(
       .from('property_documents')
       .select('storage_bucket, storage_path')
       .eq('property_id', propertyId),
+    client
+      .from('property_presentations')
+      .select(
+        'pdf_storage_bucket, pdf_storage_path, pptx_storage_bucket, pptx_storage_path, cover_storage_bucket, cover_storage_path'
+      )
+      .eq('property_id', propertyId),
   ]);
 
   const orderedImages = sortImagesCoverFirst(input.images || []);
+  const orderedPresentations = sortPresentations(input.presentations || []);
   const normalizedInput: PropertyInput = {
     ...input,
     images: orderedImages,
+    presentations: orderedPresentations,
   };
   const {activePublicPaths, activePrivatePaths} = collectActiveStoragePaths(normalizedInput);
 
-  const orphanPublicPaths: string[] = [];
-  const orphanPrivatePaths: string[] = [];
-  for (const row of [...(prevImgs || []), ...(prevDocs || [])]) {
-    const path = row.storage_path as string;
-    if (!path) continue;
-    if (row.storage_bucket === PUBLIC_MEDIA_BUCKET && !activePublicPaths.has(path)) {
-      orphanPublicPaths.push(path);
+  const prevPathEntries: Array<{bucket: string; path: string}> = [
+    ...((prevImgs || []) as Array<{storage_bucket: string; storage_path: string}>).map((r) => ({
+      bucket: r.storage_bucket,
+      path: r.storage_path,
+    })),
+    ...((prevDocs || []) as Array<{storage_bucket: string; storage_path: string}>).map((r) => ({
+      bucket: r.storage_bucket,
+      path: r.storage_path,
+    })),
+  ];
+  for (const row of (prevPres || []) as Array<SupabasePresentationRow>) {
+    if (row.pdf_storage_path) {
+      prevPathEntries.push({bucket: row.pdf_storage_bucket, path: row.pdf_storage_path});
     }
-    if (!activePrivatePaths.has(path) && !activePublicPaths.has(path)) {
-      orphanPrivatePaths.push(path);
+    if (row.pptx_storage_path) {
+      prevPathEntries.push({bucket: row.pptx_storage_bucket, path: row.pptx_storage_path});
+    }
+    if (row.cover_storage_path) {
+      prevPathEntries.push({bucket: row.cover_storage_bucket, path: row.cover_storage_path});
     }
   }
 
-  // Redundant staged copies in private bucket for files now safely active in public bucket
+  const orphanPublicPaths: string[] = [];
+  const orphanPrivatePaths: string[] = [];
+  for (const entry of prevPathEntries) {
+    if (!entry.path) continue;
+    if (entry.bucket === PUBLIC_MEDIA_BUCKET && !activePublicPaths.has(entry.path)) {
+      orphanPublicPaths.push(entry.path);
+    }
+    if (!activePrivatePaths.has(entry.path) && !activePublicPaths.has(entry.path)) {
+      orphanPrivatePaths.push(entry.path);
+    }
+  }
+
   const redundantPrivatePaths = Array.from(activePublicPaths).filter(
     (p) => !activePrivatePaths.has(p)
   );
 
-  // Write DB relations BEFORE removing Storage objects so failed DB writes never leave broken links
+  // Write DB relations BEFORE removing Storage objects
   const {error: delImgErr} = await client
     .from('property_images')
     .delete()
@@ -881,6 +1231,59 @@ async function syncPropertyRelationsInSupabase(
       };
     });
     const {error} = await client.from('property_documents').insert(docRows);
+    if (error) throw new Error(error.message);
+  }
+
+  const {error: delPresErr} = await client
+    .from('property_presentations')
+    .delete()
+    .eq('property_id', propertyId);
+  if (delPresErr) throw new Error(delPresErr.message);
+
+  if (orderedPresentations.length > 0) {
+    const isPropPub = input.visibility === 'Published' && !input.isArchived;
+    const presRows = orderedPresentations.map((p, idx) => {
+      const pdfBucket =
+        isPropPub && p.visibility === 'Public' && p.pdfStorageBucket === PUBLIC_MEDIA_BUCKET
+          ? PUBLIC_MEDIA_BUCKET
+          : PRIVATE_MEDIA_BUCKET;
+      const pptxBucket =
+        isPropPub &&
+        p.visibility === 'Public' &&
+        p.allowDownload &&
+        p.pptxStorageBucket === PUBLIC_MEDIA_BUCKET
+          ? PUBLIC_MEDIA_BUCKET
+          : PRIVATE_MEDIA_BUCKET;
+      const coverBucket =
+        isPropPub &&
+        p.visibility === 'Public' &&
+        p.coverStorageBucket === PUBLIC_MEDIA_BUCKET
+          ? PUBLIC_MEDIA_BUCKET
+          : PRIVATE_MEDIA_BUCKET;
+      return {
+        property_id: propertyId,
+        title: p.title.trim(),
+        description: p.description || '',
+        visibility: p.visibility,
+        allow_download: Boolean(p.allowDownload),
+        sort_order: idx,
+        slide_count: p.slideCount ?? null,
+        pdf_storage_bucket: pdfBucket,
+        pdf_storage_path: p.pdfStoragePath || '',
+        pdf_file_name: p.pdfFileName || '',
+        pdf_mime_type: p.pdfMimeType || '',
+        pdf_file_size_bytes: p.pdfFileSizeBytes || 0,
+        pptx_storage_bucket: pptxBucket,
+        pptx_storage_path: p.pptxStoragePath || '',
+        pptx_file_name: p.pptxFileName || '',
+        pptx_mime_type: p.pptxMimeType || '',
+        pptx_file_size_bytes: p.pptxFileSizeBytes || 0,
+        cover_storage_bucket: coverBucket,
+        cover_storage_path: p.coverStoragePath || '',
+        cover_public_url: p.coverPublicUrl || '',
+      };
+    });
+    const {error} = await client.from('property_presentations').insert(presRows);
     if (error) throw new Error(error.message);
   }
 
@@ -1020,7 +1423,28 @@ export async function prepareDocumentsForVisibility(
   );
 }
 
-async function refreshPrivateImagesForAdmin(
+export async function preparePresentationsForVisibility(
+  presentations: PropertyPresentationItem[] = [],
+  visibility: PropertyVisibility
+): Promise<PropertyPresentationItem[]> {
+  const isPublished = visibility === 'Published';
+  return sortPresentations(presentations).map((p) => {
+    const pdfBucket = resolvePresentationAssetBucket('pdf', p.visibility, p.allowDownload, isPublished);
+    const pptxBucket = resolvePresentationAssetBucket('pptx', p.visibility, p.allowDownload, isPublished);
+    const coverBucket = resolvePresentationAssetBucket('cover', p.visibility, p.allowDownload, isPublished);
+    return {
+      ...p,
+      pdfStorageBucket: p.pdfStoragePath ? pdfBucket : PRIVATE_MEDIA_BUCKET,
+      pdfPublicUrl: pdfBucket === PUBLIC_MEDIA_BUCKET ? p.pdfPublicUrl || p.pdfDataUrl : undefined,
+      pptxStorageBucket: p.pptxStoragePath ? pptxBucket : PRIVATE_MEDIA_BUCKET,
+      pptxPublicUrl:
+        pptxBucket === PUBLIC_MEDIA_BUCKET ? p.pptxPublicUrl || p.pptxDataUrl : undefined,
+      coverStorageBucket: p.coverStoragePath ? coverBucket : PRIVATE_MEDIA_BUCKET,
+    };
+  });
+}
+
+async function refreshPrivateMediaForAdmin(
   properties: Property[],
   clientOverride?: SupabaseClientLike
 ): Promise<Property[]> {
@@ -1028,23 +1452,43 @@ async function refreshPrivateImagesForAdmin(
   if (!client) return properties;
   return Promise.all(
     properties.map(async (prop) => {
-      const hasPrivate = prop.images.some(
+      const hasPrivateImg = prop.images.some(
         (img) => img.storageBucket === PRIVATE_MEDIA_BUCKET && img.storagePath
       );
-      if (!hasPrivate) return prop;
-      const refreshedImages = await Promise.all(
-        prop.images.map(async (img) => {
-          if (img.storageBucket === PRIVATE_MEDIA_BUCKET && img.storagePath) {
-            const signed = await refreshPrivateImageSignedUrl(img.storagePath, client);
-            if (signed) return {...img, url: signed};
-          }
-          return img;
-        })
+      const hasPrivatePresCover = (prop.presentations || []).some(
+        (p) => p.coverStorageBucket === PRIVATE_MEDIA_BUCKET && p.coverStoragePath
       );
+      if (!hasPrivateImg && !hasPrivatePresCover) return prop;
+
+      const refreshedImages = hasPrivateImg
+        ? await Promise.all(
+            prop.images.map(async (img) => {
+              if (img.storageBucket === PRIVATE_MEDIA_BUCKET && img.storagePath) {
+                const signed = await refreshPrivateImageSignedUrl(img.storagePath, client);
+                if (signed) return {...img, url: signed};
+              }
+              return img;
+            })
+          )
+        : prop.images;
+
+      const refreshedPresentations = hasPrivatePresCover
+        ? await Promise.all(
+            (prop.presentations || []).map(async (pres) => {
+              if (pres.coverStorageBucket === PRIVATE_MEDIA_BUCKET && pres.coverStoragePath) {
+                const signed = await refreshPrivateImageSignedUrl(pres.coverStoragePath, client);
+                if (signed) return {...pres, coverPublicUrl: signed};
+              }
+              return pres;
+            })
+          )
+        : prop.presentations;
+
       return normalizeProperty({
         ...prop,
         images: refreshedImages,
         photos: refreshedImages.map((i) => i.url),
+        presentations: refreshedPresentations,
       });
     })
   );
@@ -1058,6 +1502,7 @@ async function resolveMediaAfterPropertyCommitted(
 ): Promise<{
   preparedImages: PropertyImageItem[];
   preparedDocuments: PropertyDocumentItem[];
+  preparedPresentations: PropertyPresentationItem[];
 }> {
   const isPublished = input.visibility === 'Published' && !input.isArchived;
   const orderedImages = sortImagesCoverFirst(input.images || []);
@@ -1138,7 +1583,101 @@ async function resolveMediaAfterPropertyCommitted(
     });
   }
 
-  return {preparedImages: sortImagesCoverFirst(preparedImages), preparedDocuments};
+  const preparedPresentations: PropertyPresentationItem[] = [];
+  for (const pres of sortPresentations(input.presentations || [])) {
+    const pdfPublicWanted = isPublished && pres.visibility === 'Public' && Boolean(pres.pdfStoragePath);
+    const pptxPublicWanted =
+      isPublished && pres.visibility === 'Public' && pres.allowDownload && Boolean(pres.pptxStoragePath);
+    const coverPublicWanted =
+      isPublished && pres.visibility === 'Public' && Boolean(pres.coverStoragePath);
+
+    let nextPdfBucket: StorageBucketName = PRIVATE_MEDIA_BUCKET;
+    let nextPdfPublicUrl: string | undefined;
+    if (pdfPublicWanted && pres.pdfStoragePath) {
+      if (pres.pdfStorageBucket === PRIVATE_MEDIA_BUCKET) {
+        const promoted = await promoteFileToPublicBucket(
+          pres.pdfStoragePath,
+          pres.pdfMimeType || 'application/pdf',
+          client
+        );
+        if (!promoted) {
+          throw new Error(`Failed to promote presentation PDF "${pres.pdfFileName}" to public storage.`);
+        }
+        if (!previouslyPublicPaths.has(pres.pdfStoragePath)) {
+          newlyPromotedPublicPaths.push(pres.pdfStoragePath);
+        }
+        nextPdfBucket = PUBLIC_MEDIA_BUCKET;
+        nextPdfPublicUrl = promoted;
+      } else {
+        nextPdfBucket = PUBLIC_MEDIA_BUCKET;
+        nextPdfPublicUrl =
+          pres.pdfPublicUrl ||
+          client.storage.from(PUBLIC_MEDIA_BUCKET).getPublicUrl(pres.pdfStoragePath).data.publicUrl;
+      }
+    }
+
+    let nextPptxBucket: StorageBucketName = PRIVATE_MEDIA_BUCKET;
+    let nextPptxPublicUrl: string | undefined;
+    if (pptxPublicWanted && pres.pptxStoragePath) {
+      if (pres.pptxStorageBucket === PRIVATE_MEDIA_BUCKET) {
+        const promoted = await promoteFileToPublicBucket(
+          pres.pptxStoragePath,
+          pres.pptxMimeType || 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          client
+        );
+        if (!promoted) {
+          throw new Error(`Failed to promote presentation PPTX "${pres.pptxFileName}" to public storage.`);
+        }
+        if (!previouslyPublicPaths.has(pres.pptxStoragePath)) {
+          newlyPromotedPublicPaths.push(pres.pptxStoragePath);
+        }
+        nextPptxBucket = PUBLIC_MEDIA_BUCKET;
+        nextPptxPublicUrl = promoted;
+      } else {
+        nextPptxBucket = PUBLIC_MEDIA_BUCKET;
+        nextPptxPublicUrl =
+          pres.pptxPublicUrl ||
+          client.storage.from(PUBLIC_MEDIA_BUCKET).getPublicUrl(pres.pptxStoragePath).data.publicUrl;
+      }
+    }
+
+    let nextCoverBucket: StorageBucketName = PRIVATE_MEDIA_BUCKET;
+    let nextCoverUrl = pres.coverPublicUrl || '';
+    if (coverPublicWanted && pres.coverStoragePath) {
+      if (pres.coverStorageBucket === PRIVATE_MEDIA_BUCKET) {
+        const promoted = await promoteImageToPublicBucket(pres.coverStoragePath, client);
+        if (!promoted) {
+          throw new Error(`Failed to promote presentation cover "${pres.coverStoragePath}" to public storage.`);
+        }
+        if (!previouslyPublicPaths.has(pres.coverStoragePath)) {
+          newlyPromotedPublicPaths.push(pres.coverStoragePath);
+        }
+        nextCoverBucket = PUBLIC_MEDIA_BUCKET;
+        nextCoverUrl = promoted;
+      } else {
+        nextCoverBucket = PUBLIC_MEDIA_BUCKET;
+      }
+    } else if (pres.coverStoragePath) {
+      const signed = await refreshPrivateImageSignedUrl(pres.coverStoragePath, client);
+      if (signed) nextCoverUrl = signed;
+    }
+
+    preparedPresentations.push({
+      ...pres,
+      pdfStorageBucket: nextPdfBucket,
+      pdfPublicUrl: nextPdfPublicUrl,
+      pptxStorageBucket: nextPptxBucket,
+      pptxPublicUrl: nextPptxPublicUrl,
+      coverStorageBucket: nextCoverBucket,
+      coverPublicUrl: nextCoverUrl,
+    });
+  }
+
+  return {
+    preparedImages: sortImagesCoverFirst(preparedImages),
+    preparedDocuments,
+    preparedPresentations,
+  };
 }
 
 const propertyMutationLocks = new Map<string, Promise<unknown>>();
@@ -1193,21 +1732,67 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
     async listProperties(includeUnpublished = false): Promise<Property[]> {
       const client = activeClient();
       if (client) {
-        let query = client
-          .from('properties')
-          .select('*, property_images(*), property_videos(*), property_documents(*)')
-          .order('lot_id', {ascending: true});
-        if (!includeUnpublished) {
-          query = query.eq('visibility', 'Published').eq('is_archived', false);
+        if (includeUnpublished) {
+          const {data, error} = await client
+            .from('properties')
+            .select(
+              '*, property_images(*), property_videos(*), property_documents(*), property_presentations(*)'
+            )
+            .order('lot_id', {ascending: true});
+          if (error) throw new Error(error.message);
+          const mapped = (data as SupabasePropertyRow[]).map((r) =>
+            mapRowToProperty(r, client)
+          );
+          return refreshPrivateMediaForAdmin(mapped, client);
         }
-        const {data, error} = await query;
-        if (error) throw new Error(error.message);
-        const mapped = (data as SupabasePropertyRow[]).map(mapRowToProperty);
-        return includeUnpublished ? refreshPrivateImagesForAdmin(mapped, client) : mapped;
+
+        // Public reads query SQL-redacted views (`public_properties`, `public_property_presentations`)
+        // plus RLS-isolated child media so disabled pricing & private assets never cross the wire.
+        const {data: propRows, error: propErr} = await client
+          .from('public_properties')
+          .select('*')
+          .order('lot_id', {ascending: true});
+        if (propErr) throw new Error(propErr.message);
+
+        const rows = (propRows || []) as SupabasePropertyRow[];
+        if (rows.length === 0) return [];
+        const propertyIds = rows.map((r) => r.id);
+
+        const [
+          {data: imgRows},
+          {data: vidRows},
+          {data: docRows},
+          {data: presRows},
+        ] = await Promise.all([
+          client.from('property_images').select('*').in('property_id', propertyIds),
+          client.from('property_videos').select('*').in('property_id', propertyIds),
+          client.from('property_documents').select('*').in('property_id', propertyIds),
+          client
+            .from('public_property_presentations')
+            .select('*')
+            .in('property_id', propertyIds),
+        ]);
+
+        return rows.map((row) => {
+          const enriched: SupabasePropertyRow = {
+            ...row,
+            property_images: (imgRows || []).filter((i) => i.property_id === row.id),
+            property_videos: (vidRows || []).filter((v) => v.property_id === row.id),
+            property_documents: (docRows || []).filter((d) => d.property_id === row.id),
+            property_presentations: (presRows || []).filter(
+              (p) => p.property_id === row.id
+            ),
+          };
+          return redactPropertyForPublicResponse(mapRowToProperty(enriched, client));
+        });
       }
 
       const items = readDemoProperties();
-      return includeUnpublished ? items : items.filter(isPropertyPubliclyVisible);
+      return includeUnpublished
+        ? items
+        : items
+            .filter(isPropertyPubliclyVisible)
+            .map(redactPropertyForPublicResponse);
     },
 
     async createProperty(input: PropertyInput): Promise<Property> {
@@ -1221,6 +1806,13 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
       if (!input.lotAreaSqm || input.lotAreaSqm <= 0) {
         throw new Error('Lot area (sqm) must be greater than 0.');
       }
+      if (
+        input.frontageLengthM !== null &&
+        input.frontageLengthM !== undefined &&
+        (!Number.isFinite(input.frontageLengthM) || input.frontageLengthM <= 0)
+      ) {
+        throw new Error('Frontage length (meters) must be a positive number when provided.');
+      }
 
       const coordCheck = validateCoordinates(input.latitude, input.longitude);
       if (!coordCheck.valid || coordCheck.latitude === undefined || coordCheck.longitude === undefined) {
@@ -1231,6 +1823,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
 
       const normalizedInput: PropertyInput = {
         ...input,
+        frontageLengthM: parseOptionalFrontageLength(input.frontageLengthM),
         latitude: coordCheck.latitude,
         longitude: coordCheck.longitude,
         googleMapsUrl:
@@ -1240,11 +1833,13 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
 
       const validatedVideos = validateAndNormalizeVideos(normalizedInput.videos || []);
       const orderedRawImages = sortImagesCoverFirst(normalizedInput.images || []);
+      const orderedRawPresentations = sortPresentations(normalizedInput.presentations || []);
       const isArchived = normalizedInput.visibility === 'Archived' || normalizedInput.isArchived;
       const isPublishing = normalizedInput.visibility === 'Published' && !isArchived;
 
       const client = activeClient();
       validateImageEntriesForStorage(orderedRawImages, Boolean(client));
+      validatePresentationEntriesForStorage(orderedRawPresentations, Boolean(client));
 
       if (isPublishing) {
         const publishErrors = validatePropertyForPublish({
@@ -1253,6 +1848,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           isArchived,
           images: orderedRawImages,
           videos: validatedVideos,
+          presentations: orderedRawPresentations,
         });
         if (publishErrors.length > 0) {
           throw new Error(publishErrors[0]);
@@ -1260,7 +1856,6 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
       }
 
       if (client) {
-        // 1. Insert property row FIRST in safe Draft state (never publicly visible mid-flight)
         const safeInitialRow = mapPropertyToRow({
           ...normalizedInput,
           lotId: normalizedLotId,
@@ -1271,6 +1866,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           videos: validatedVideos,
           youtubeUrl: validatedVideos[0]?.url || '',
           photos: [],
+          presentations: [],
         });
 
         const {data, error} = await client
@@ -1284,7 +1880,6 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         const newlyPromotedPublicPaths: string[] = [];
 
         try {
-          // 2. Stage relations cleanly in private storage state FIRST
           const stagedImages: PropertyImageItem[] = orderedRawImages.map((img) => ({
             ...img,
             storageBucket: PRIVATE_MEDIA_BUCKET,
@@ -1295,6 +1890,14 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             storageBucket: PRIVATE_MEDIA_BUCKET,
             publicUrl: undefined,
           }));
+          const stagedPresentations: PropertyPresentationItem[] = orderedRawPresentations.map((p) => ({
+            ...p,
+            pdfStorageBucket: PRIVATE_MEDIA_BUCKET,
+            pdfPublicUrl: undefined,
+            pptxStorageBucket: PRIVATE_MEDIA_BUCKET,
+            pptxPublicUrl: undefined,
+            coverStorageBucket: PRIVATE_MEDIA_BUCKET,
+          }));
 
           const stagedInput: PropertyInput = {
             ...normalizedInput,
@@ -1303,6 +1906,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             isArchived: false,
             images: stagedImages,
             documents: stagedDocuments,
+            presentations: stagedPresentations,
             videos: validatedVideos,
             youtubeUrl: validatedVideos[0]?.url || '',
             photos: [],
@@ -1312,19 +1916,20 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             deferStorageCleanup: true,
           });
 
-          // 3. Promote ONLY authorized approved images & public docs when publishing
-          const {preparedImages, preparedDocuments} = await resolveMediaAfterPropertyCommitted(
-            client,
-            {
-              ...normalizedInput,
-              lotId: normalizedLotId,
-              isArchived,
-              images: orderedRawImages,
-              videos: validatedVideos,
-            },
-            new Set<string>(),
-            newlyPromotedPublicPaths
-          );
+          const {preparedImages, preparedDocuments, preparedPresentations} =
+            await resolveMediaAfterPropertyCommitted(
+              client,
+              {
+                ...normalizedInput,
+                lotId: normalizedLotId,
+                isArchived,
+                images: orderedRawImages,
+                videos: validatedVideos,
+                presentations: orderedRawPresentations,
+              },
+              new Set<string>(),
+              newlyPromotedPublicPaths
+            );
 
           const orderedApprovedUrls = sortImagesCoverFirst(preparedImages)
             .filter((img) => (isPublishing ? img.isApprovedPublic : true))
@@ -1340,7 +1945,6 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             ? normalizedInput.publishedAt || new Date().toISOString()
             : null;
 
-          // 4. Commit final property visibility + public photos URLs
           const {data: finalPropRow, error: propCommitErr} = await client
             .from('properties')
             .update({
@@ -1361,30 +1965,17 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             isArchived,
             images: preparedImages,
             documents: preparedDocuments,
+            presentations: preparedPresentations,
             videos: validatedVideos,
             youtubeUrl: validatedVideos[0]?.url || '',
             photos: finalPhotoList,
             publishedAt: targetPublishedAt || undefined,
           };
 
-          // 5. Update relation metadata now that property is in final visibility state (safe for DB trigger)
-          let cleanupTargets: RelationSyncResult = {
-            orphanPublicPaths: [],
-            orphanPrivatePaths: [],
-            redundantPrivatePaths: [],
-          };
-          if (isPublishing) {
-            cleanupTargets = await syncPropertyRelationsInSupabase(createdId, finalInput, client, {
-              deferStorageCleanup: true,
-            });
-          } else {
-            // Update signed preview URLs in property_images for Draft/Archived without touching public bucket
-            cleanupTargets = await syncPropertyRelationsInSupabase(createdId, finalInput, client, {
-              deferStorageCleanup: true,
-            });
-          }
+          const cleanupTargets = await syncPropertyRelationsInSupabase(createdId, finalInput, client, {
+            deferStorageCleanup: true,
+          });
 
-          // 6. Post-commit cleanup: remove redundant staged copies in private bucket if promoted & unreferenced elsewhere
           if (cleanupTargets.redundantPrivatePaths.length > 0) {
             const safeRedundant = await findDeletableStoragePaths(
               client,
@@ -1417,9 +2008,10 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         }
       }
 
-      const [preparedImages, preparedDocuments] = await Promise.all([
+      const [preparedImages, preparedDocuments, preparedPresentations] = await Promise.all([
         prepareImagesForVisibility(orderedRawImages, normalizedInput.visibility),
         prepareDocumentsForVisibility(normalizedInput.documents || [], normalizedInput.visibility),
+        preparePresentationsForVisibility(orderedRawPresentations, normalizedInput.visibility),
       ]);
       const preparedInput: PropertyInput = {
         ...normalizedInput,
@@ -1427,6 +2019,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         isArchived,
         images: preparedImages,
         documents: preparedDocuments,
+        presentations: preparedPresentations,
         videos: validatedVideos,
         youtubeUrl: validatedVideos[0]?.url || '',
         photos:
@@ -1451,6 +2044,14 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
 
     async updateProperty(id: string, input: PropertyInput): Promise<Property> {
       return withPropertyMutationLock(id, async () => {
+        if (
+          input.frontageLengthM !== null &&
+          input.frontageLengthM !== undefined &&
+          (!Number.isFinite(input.frontageLengthM) || input.frontageLengthM <= 0)
+        ) {
+          throw new Error('Frontage length (meters) must be a positive number when provided.');
+        }
+
         const coordCheck = validateCoordinates(input.latitude, input.longitude);
         if (!coordCheck.valid || coordCheck.latitude === undefined || coordCheck.longitude === undefined) {
           throw new Error(
@@ -1460,6 +2061,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
 
         const normalizedInput: PropertyInput = {
           ...input,
+          frontageLengthM: parseOptionalFrontageLength(input.frontageLengthM),
           latitude: coordCheck.latitude,
           longitude: coordCheck.longitude,
           googleMapsUrl:
@@ -1469,22 +2071,25 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
 
         const validatedVideos = validateAndNormalizeVideos(normalizedInput.videos || []);
         const orderedRawImages = sortImagesCoverFirst(normalizedInput.images || []);
+        const orderedRawPresentations = sortPresentations(normalizedInput.presentations || []);
         const client = activeClient();
 
         if (client) {
           validateImageEntriesForStorage(orderedRawImages, true);
+          validatePresentationEntriesForStorage(orderedRawPresentations, true);
 
-          // 1. Capture complete pre-mutation snapshot for rollback, diffing & optimistic concurrency check
           const [
             {data: existingRow, error: fetchErr},
             {data: prevImgRows},
             {data: prevVidRows},
             {data: prevDocRows},
+            {data: prevPresRows},
           ] = await Promise.all([
             client.from('properties').select('*').eq('id', id).single(),
             client.from('property_images').select('*').eq('property_id', id),
             client.from('property_videos').select('*').eq('property_id', id),
             client.from('property_documents').select('*').eq('property_id', id),
+            client.from('property_presentations').select('*').eq('property_id', id),
           ]);
           if (fetchErr || !existingRow) {
             throw new Error(fetchErr?.message || 'Property record not found.');
@@ -1511,6 +2116,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               isArchived,
               images: orderedRawImages,
               videos: validatedVideos,
+              presentations: orderedRawPresentations,
             });
             if (publishErrors.length > 0) {
               throw new Error(publishErrors[0]);
@@ -1523,8 +2129,19 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               prevPublicPaths.add(row.storage_path as string);
             }
           }
+          for (const row of (prevPresRows || []) as SupabasePresentationRow[]) {
+            if (row.pdf_storage_bucket === PUBLIC_MEDIA_BUCKET && row.pdf_storage_path) {
+              prevPublicPaths.add(row.pdf_storage_path);
+            }
+            if (row.pptx_storage_bucket === PUBLIC_MEDIA_BUCKET && row.pptx_storage_path) {
+              prevPublicPaths.add(row.pptx_storage_path);
+            }
+            if (row.cover_storage_bucket === PUBLIC_MEDIA_BUCKET && row.cover_storage_path) {
+              prevPublicPaths.add(row.cover_storage_path);
+            }
+          }
 
-          // 2. Create & verify private backups BEFORE mutating DB or removing public objects
+          // Create & verify private backups BEFORE mutating DB or removing public objects
           for (const img of orderedRawImages) {
             const leavingPublic =
               img.storagePath &&
@@ -1543,10 +2160,33 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               await ensurePrivateBackupFromPublicBucket(doc.storagePath, doc.mimeType, client);
             }
           }
+          for (const pres of orderedRawPresentations) {
+            const isPresPub = willBePublished && pres.visibility === 'Public';
+            if (pres.pdfStoragePath && pres.pdfStorageBucket === PUBLIC_MEDIA_BUCKET && !isPresPub) {
+              await ensurePrivateBackupFromPublicBucket(
+                pres.pdfStoragePath,
+                pres.pdfMimeType || 'application/pdf',
+                client
+              );
+            }
+            if (
+              pres.pptxStoragePath &&
+              pres.pptxStorageBucket === PUBLIC_MEDIA_BUCKET &&
+              (!isPresPub || !pres.allowDownload)
+            ) {
+              await ensurePrivateBackupFromPublicBucket(
+                pres.pptxStoragePath,
+                pres.pptxMimeType || 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                client
+              );
+            }
+            if (pres.coverStoragePath && pres.coverStorageBucket === PUBLIC_MEDIA_BUCKET && !isPresPub) {
+              await ensurePrivateBackupFromPublicBucket(pres.coverStoragePath, 'image/webp', client);
+            }
+          }
 
           const newlyPromotedPublicPaths: string[] = [];
 
-          // 3. Commit properties row FIRST with optimistic concurrency lock on updated_at
           const step3UpdatedAt = nextOptimisticTimestamp(prevSnapshot.updated_at);
           const initialRow = {
             ...mapPropertyToRow({
@@ -1555,6 +2195,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               isArchived,
               images: orderedRawImages,
               videos: validatedVideos,
+              presentations: orderedRawPresentations,
               youtubeUrl: validatedVideos[0]?.url || '',
               photos: willBePublished ? prevSnapshot.photos || [] : [],
             }),
@@ -1581,6 +2222,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             images: (prevImgRows || []) as Array<Record<string, unknown>>,
             videos: (prevVidRows || []) as Array<Record<string, unknown>>,
             documents: (prevDocRows || []) as Array<Record<string, unknown>>,
+            presentations: (prevPresRows || []) as Array<Record<string, unknown>>,
           };
 
           let cleanupTargets: RelationSyncResult = {
@@ -1590,19 +2232,20 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           };
 
           try {
-            // 4. Promote approved media ONLY now that properties row is committed
-            const {preparedImages, preparedDocuments} = await resolveMediaAfterPropertyCommitted(
-              client,
-              {
-                ...normalizedInput,
-                lotId: lockedLotId,
-                isArchived,
-                images: orderedRawImages,
-                videos: validatedVideos,
-              },
-              prevPublicPaths,
-              newlyPromotedPublicPaths
-            );
+            const {preparedImages, preparedDocuments, preparedPresentations} =
+              await resolveMediaAfterPropertyCommitted(
+                client,
+                {
+                  ...normalizedInput,
+                  lotId: lockedLotId,
+                  isArchived,
+                  images: orderedRawImages,
+                  videos: validatedVideos,
+                  presentations: orderedRawPresentations,
+                },
+                prevPublicPaths,
+                newlyPromotedPublicPaths
+              );
 
             const orderedApprovedUrls = sortImagesCoverFirst(preparedImages)
               .filter((img) => (willBePublished ? img.isApprovedPublic : true))
@@ -1620,12 +2263,12 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               isArchived,
               images: preparedImages,
               documents: preparedDocuments,
+              presentations: preparedPresentations,
               photos: orderedPhotos,
               videos: validatedVideos,
               youtubeUrl: validatedVideos[0]?.url || '',
             };
 
-            // 5. Sync DB relations BEFORE deleting any Storage orphans
             cleanupTargets = await syncPropertyRelationsInSupabase(id, preparedInput, client, {
               deferStorageCleanup: true,
             });
@@ -1645,7 +2288,6 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               );
             }
 
-            // 6. Post-commit Storage cleanup (verified against cross-record references)
             const [safePubOrphans, safePrivOrphans, safeRedundantPriv] = await Promise.all([
               findDeletableStoragePaths(
                 client,
@@ -1722,9 +2364,10 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         }
 
         const lockedLotId = current.lotId;
-        const [preparedImages, preparedDocuments] = await Promise.all([
+        const [preparedImages, preparedDocuments, preparedPresentations] = await Promise.all([
           prepareImagesForVisibility(orderedRawImages, normalizedInput.visibility),
           prepareDocumentsForVisibility(normalizedInput.documents || [], normalizedInput.visibility),
+          preparePresentationsForVisibility(orderedRawPresentations, normalizedInput.visibility),
         ]);
         const updated = normalizeProperty({
           ...normalizedInput,
@@ -1733,6 +2376,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           isArchived: normalizedInput.visibility === 'Archived' || normalizedInput.isArchived,
           images: preparedImages,
           documents: preparedDocuments,
+          presentations: preparedPresentations,
           photos:
             preparedImages.length > 0
               ? sortImagesCoverFirst(preparedImages).map((img) => img.url)
@@ -1755,7 +2399,9 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
         if (client) {
           const {data: currentRow, error: fetchErr} = await client
             .from('properties')
-            .select('*, property_images(*), property_videos(*), property_documents(*)')
+            .select(
+              '*, property_images(*), property_videos(*), property_documents(*), property_presentations(*)'
+            )
             .eq('id', id)
             .single();
           if (fetchErr || !currentRow) {
@@ -1763,13 +2409,15 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           }
 
           const prevSnapshot = currentRow as SupabasePropertyRow;
-          const mapped = mapRowToProperty(prevSnapshot);
+          const mapped = mapRowToProperty(prevSnapshot, client);
           const imgRows = prevSnapshot.property_images || [];
           const docRows = prevSnapshot.property_documents || [];
+          const presRows = prevSnapshot.property_presentations || [];
           const prevRelations: PreviousRelationsSnapshot = {
             images: imgRows.map((img) => ({...img, property_id: id})),
             videos: (prevSnapshot.property_videos || []).map((v) => ({...v, property_id: id})),
             documents: docRows.map((d) => ({...d, property_id: id})),
+            presentations: presRows.map((p) => ({...p, property_id: id})),
           };
 
           if (visibility === 'Published') {
@@ -1783,9 +2431,19 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
                 .filter((r) => r.storage_bucket === PUBLIC_MEDIA_BUCKET && r.storage_path)
                 .map((r) => r.storage_path)
             );
-            const newlyPromotedPublicPaths: string[] = [];
+            for (const p of presRows) {
+              if (p.pdf_storage_bucket === PUBLIC_MEDIA_BUCKET && p.pdf_storage_path) {
+                prevPublicPaths.add(p.pdf_storage_path);
+              }
+              if (p.pptx_storage_bucket === PUBLIC_MEDIA_BUCKET && p.pptx_storage_path) {
+                prevPublicPaths.add(p.pptx_storage_path);
+              }
+              if (p.cover_storage_bucket === PUBLIC_MEDIA_BUCKET && p.cover_storage_path) {
+                prevPublicPaths.add(p.cover_storage_path);
+              }
+            }
 
-            // 1. Update property visibility FIRST with optimistic concurrency lock
+            const newlyPromotedPublicPaths: string[] = [];
             const nextPublishedAt = mapped.publishedAt || new Date().toISOString();
             const step1UpdatedAt = nextOptimisticTimestamp(prevSnapshot.updated_at);
             const {data: pubRow, error: propPubErr} = await client
@@ -1808,162 +2466,467 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             }
             const committedUpdatedAt = (pubRow.updated_at as string) || step1UpdatedAt;
 
-          try {
-            const updatedImages: PropertyImageItem[] = [];
-            const promotedPrivateDuplicates: string[] = [];
+            try {
+              const updatedImages: PropertyImageItem[] = [];
+              const promotedPrivateDuplicates: string[] = [];
 
-            for (const row of imgRows) {
-              if (!row.is_approved_public) {
-                const signed = row.storage_path
-                  ? await refreshPrivateImageSignedUrl(row.storage_path, client)
-                  : null;
+              for (const row of imgRows) {
+                if (!row.is_approved_public) {
+                  const signed = row.storage_path
+                    ? await refreshPrivateImageSignedUrl(row.storage_path, client)
+                    : null;
+                  updatedImages.push({
+                    id: row.id,
+                    url: signed || row.public_url,
+                    storageBucket: PRIVATE_MEDIA_BUCKET,
+                    storagePath: row.storage_path,
+                    caption: row.caption,
+                    isCover: row.is_cover,
+                    isApprovedPublic: false,
+                    sortOrder: row.sort_order,
+                  });
+                  continue;
+                }
+
+                let finalUrl = row.public_url;
+                if (row.storage_bucket === PRIVATE_MEDIA_BUCKET && row.storage_path) {
+                  const promoted = await promoteImageToPublicBucket(row.storage_path, client);
+                  if (!promoted) {
+                    throw new Error(
+                      `Failed to promote approved image "${row.storage_path}" to public storage before publishing.`
+                    );
+                  }
+                  if (!prevPublicPaths.has(row.storage_path)) {
+                    newlyPromotedPublicPaths.push(row.storage_path);
+                  }
+                  promotedPrivateDuplicates.push(row.storage_path);
+                  finalUrl = promoted;
+                }
+
+                const {error: imgUpdErr} = await client
+                  .from('property_images')
+                  .update({
+                    storage_bucket: PUBLIC_MEDIA_BUCKET,
+                    is_approved_public: true,
+                    public_url: finalUrl,
+                  })
+                  .eq('id', row.id);
+                if (imgUpdErr) throw new Error(imgUpdErr.message);
+
                 updatedImages.push({
                   id: row.id,
-                  url: signed || row.public_url,
-                  storageBucket: PRIVATE_MEDIA_BUCKET,
+                  url: finalUrl,
+                  storageBucket: PUBLIC_MEDIA_BUCKET,
                   storagePath: row.storage_path,
                   caption: row.caption,
                   isCover: row.is_cover,
-                  isApprovedPublic: false,
+                  isApprovedPublic: true,
                   sortOrder: row.sort_order,
                 });
-                continue;
               }
 
-              let finalUrl = row.public_url;
-              if (row.storage_bucket === PRIVATE_MEDIA_BUCKET && row.storage_path) {
-                const promoted = await promoteImageToPublicBucket(row.storage_path, client);
-                if (!promoted) {
-                  throw new Error(
-                    `Failed to promote approved image "${row.storage_path}" to public storage before publishing.`
+              const updatedDocs: PropertyDocumentItem[] = [];
+              for (const d of docRows) {
+                if (
+                  d.visibility === 'Public' &&
+                  d.storage_bucket === PRIVATE_MEDIA_BUCKET &&
+                  d.storage_path
+                ) {
+                  const promotedDocUrl = await promoteFileToPublicBucket(
+                    d.storage_path,
+                    d.mime_type,
+                    client
                   );
+                  if (!promotedDocUrl) {
+                    throw new Error(
+                      `Failed to promote public document "${d.file_name}" before publishing.`
+                    );
+                  }
+                  if (!prevPublicPaths.has(d.storage_path)) {
+                    newlyPromotedPublicPaths.push(d.storage_path);
+                  }
+                  promotedPrivateDuplicates.push(d.storage_path);
+                  const {error: docUpdErr} = await client
+                    .from('property_documents')
+                    .update({storage_bucket: PUBLIC_MEDIA_BUCKET})
+                    .eq('id', d.id);
+                  if (docUpdErr) throw new Error(docUpdErr.message);
+
+                  updatedDocs.push({
+                    id: d.id,
+                    title: d.title,
+                    category: d.category,
+                    visibility: d.visibility,
+                    storageBucket: PUBLIC_MEDIA_BUCKET,
+                    storagePath: d.storage_path,
+                    fileName: d.file_name,
+                    mimeType: d.mime_type,
+                    fileSizeBytes: Number(d.file_size_bytes) || 0,
+                    publicUrl: promotedDocUrl,
+                    uploadedAt: d.created_at,
+                  });
+                } else {
+                  updatedDocs.push({
+                    id: d.id,
+                    title: d.title,
+                    category: d.category,
+                    visibility: d.visibility,
+                    storageBucket: d.storage_bucket,
+                    storagePath: d.storage_path,
+                    fileName: d.file_name,
+                    mimeType: d.mime_type,
+                    fileSizeBytes: Number(d.file_size_bytes) || 0,
+                    uploadedAt: d.created_at,
+                  });
                 }
-                if (!prevPublicPaths.has(row.storage_path)) {
-                  newlyPromotedPublicPaths.push(row.storage_path);
-                }
-                promotedPrivateDuplicates.push(row.storage_path);
-                finalUrl = promoted;
               }
 
-              const {error: imgUpdErr} = await client
+              const updatedPres: PropertyPresentationItem[] = [];
+              for (const p of presRows) {
+                const isPublicPres = p.visibility === 'Public';
+                let pdfBucket = p.pdf_storage_bucket;
+                let pptxBucket = p.pptx_storage_bucket;
+                let coverBucket = p.cover_storage_bucket;
+                let coverUrl = p.cover_public_url;
+
+                if (isPublicPres && p.pdf_storage_path && p.pdf_storage_bucket === PRIVATE_MEDIA_BUCKET) {
+                  const promotedPdf = await promoteFileToPublicBucket(
+                    p.pdf_storage_path,
+                    p.pdf_mime_type || 'application/pdf',
+                    client
+                  );
+                  if (!promotedPdf) {
+                    throw new Error(`Failed to promote public presentation "${p.title}" PDF.`);
+                  }
+                  if (!prevPublicPaths.has(p.pdf_storage_path)) {
+                    newlyPromotedPublicPaths.push(p.pdf_storage_path);
+                  }
+                  promotedPrivateDuplicates.push(p.pdf_storage_path);
+                  pdfBucket = PUBLIC_MEDIA_BUCKET;
+                }
+                if (
+                  isPublicPres &&
+                  p.allow_download &&
+                  p.pptx_storage_path &&
+                  p.pptx_storage_bucket === PRIVATE_MEDIA_BUCKET
+                ) {
+                  const promotedPptx = await promoteFileToPublicBucket(
+                    p.pptx_storage_path,
+                    p.pptx_mime_type || 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                    client
+                  );
+                  if (!promotedPptx) {
+                    throw new Error(`Failed to promote public presentation "${p.title}" PPTX.`);
+                  }
+                  if (!prevPublicPaths.has(p.pptx_storage_path)) {
+                    newlyPromotedPublicPaths.push(p.pptx_storage_path);
+                  }
+                  promotedPrivateDuplicates.push(p.pptx_storage_path);
+                  pptxBucket = PUBLIC_MEDIA_BUCKET;
+                }
+                if (isPublicPres && p.cover_storage_path && p.cover_storage_bucket === PRIVATE_MEDIA_BUCKET) {
+                  const promotedCover = await promoteImageToPublicBucket(p.cover_storage_path, client);
+                  if (!promotedCover) {
+                    throw new Error(`Failed to promote presentation cover for "${p.title}".`);
+                  }
+                  if (!prevPublicPaths.has(p.cover_storage_path)) {
+                    newlyPromotedPublicPaths.push(p.cover_storage_path);
+                  }
+                  promotedPrivateDuplicates.push(p.cover_storage_path);
+                  coverBucket = PUBLIC_MEDIA_BUCKET;
+                  coverUrl = promotedCover;
+                }
+
+                if (
+                  pdfBucket !== p.pdf_storage_bucket ||
+                  pptxBucket !== p.pptx_storage_bucket ||
+                  coverBucket !== p.cover_storage_bucket ||
+                  coverUrl !== p.cover_public_url
+                ) {
+                  const {error: presUpdErr} = await client
+                    .from('property_presentations')
+                    .update({
+                      pdf_storage_bucket: pdfBucket,
+                      pptx_storage_bucket: pptxBucket,
+                      cover_storage_bucket: coverBucket,
+                      cover_public_url: coverUrl,
+                    })
+                    .eq('id', p.id);
+                  if (presUpdErr) throw new Error(presUpdErr.message);
+                }
+
+                updatedPres.push(
+                  mapPresentationRow(
+                    {
+                      ...p,
+                      pdf_storage_bucket: pdfBucket,
+                      pptx_storage_bucket: pptxBucket,
+                      cover_storage_bucket: coverBucket,
+                      cover_public_url: coverUrl,
+                    },
+                    client
+                  )
+                );
+              }
+
+              const orderedApprovedUrls = sortImagesCoverFirst(updatedImages)
+                .filter((img) => img.isApprovedPublic)
+                .map((img) => img.url);
+              const fallbackPhotos =
+                orderedApprovedUrls.length > 0 ? orderedApprovedUrls : mapped.photos;
+
+              const finalUpdatedAt = nextOptimisticTimestamp(committedUpdatedAt);
+              const {data: finalRow, error: photoSyncErr} = await client
+                .from('properties')
+                .update({photos: fallbackPhotos, updated_at: finalUpdatedAt})
+                .eq('id', id)
+                .eq('updated_at', committedUpdatedAt)
+                .select()
+                .maybeSingle();
+              if (photoSyncErr) throw new Error(photoSyncErr.message);
+              if (!finalRow) {
+                throw new Error(
+                  'Concurrent update detected while publishing media. Newer administrator changes were detected.'
+                );
+              }
+
+              if (promotedPrivateDuplicates.length > 0) {
+                const safeRedundant = await findDeletableStoragePaths(
+                  client,
+                  PRIVATE_MEDIA_BUCKET,
+                  promotedPrivateDuplicates,
+                  id
+                );
+                await removeStoragePathsFromBucket(PRIVATE_MEDIA_BUCKET, safeRedundant, client);
+              }
+
+              return normalizeProperty({
+                ...mapped,
+                visibility: 'Published',
+                isArchived: false,
+                publishedAt: nextPublishedAt,
+                images: sortImagesCoverFirst(updatedImages),
+                photos: fallbackPhotos,
+                documents: updatedDocs,
+                presentations: sortPresentations(updatedPres),
+                updatedAt: finalRow?.updated_at || committedUpdatedAt,
+              });
+            } catch (err) {
+              const restoredRow = await restorePropertyRowSnapshot(
+                client,
+                id,
+                prevSnapshot,
+                committedUpdatedAt
+              );
+              if (restoredRow) {
+                await restoreRelationsSnapshot(client, id, prevRelations);
+              }
+              if (newlyPromotedPublicPaths.length > 0) {
+                const safePromotedCleanup = await findDeletableStoragePaths(
+                  client,
+                  PUBLIC_MEDIA_BUCKET,
+                  newlyPromotedPublicPaths
+                );
+                await cleanupPromotedPublicObjects(safePromotedCleanup, client);
+              }
+              if (!restoredRow) {
+                const baseMessage = err instanceof Error ? err.message : 'Publishing failed.';
+                throw new Error(
+                  `${baseMessage} Concurrent changes from another administrator were detected and preserved.`
+                );
+              }
+              throw err;
+            }
+          }
+
+          // Unpublishing / Archiving:
+          const publicPathsToRemove: string[] = [];
+          for (const row of imgRows) {
+            if (row.storage_bucket === PUBLIC_MEDIA_BUCKET && row.storage_path) {
+              await ensurePrivateBackupFromPublicBucket(row.storage_path, 'image/webp', client);
+              publicPathsToRemove.push(row.storage_path);
+            }
+          }
+          for (const doc of docRows) {
+            if (doc.storage_bucket === PUBLIC_MEDIA_BUCKET && doc.storage_path) {
+              await ensurePrivateBackupFromPublicBucket(doc.storage_path, doc.mime_type, client);
+              publicPathsToRemove.push(doc.storage_path);
+            }
+          }
+          for (const pres of presRows) {
+            if (pres.pdf_storage_bucket === PUBLIC_MEDIA_BUCKET && pres.pdf_storage_path) {
+              await ensurePrivateBackupFromPublicBucket(
+                pres.pdf_storage_path,
+                pres.pdf_mime_type || 'application/pdf',
+                client
+              );
+              publicPathsToRemove.push(pres.pdf_storage_path);
+            }
+            if (pres.pptx_storage_bucket === PUBLIC_MEDIA_BUCKET && pres.pptx_storage_path) {
+              await ensurePrivateBackupFromPublicBucket(
+                pres.pptx_storage_path,
+                pres.pptx_mime_type || 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+                client
+              );
+              publicPathsToRemove.push(pres.pptx_storage_path);
+            }
+            if (pres.cover_storage_bucket === PUBLIC_MEDIA_BUCKET && pres.cover_storage_path) {
+              await ensurePrivateBackupFromPublicBucket(
+                pres.cover_storage_path,
+                'image/webp',
+                client
+              );
+              publicPathsToRemove.push(pres.cover_storage_path);
+            }
+          }
+
+          const step2UpdatedAt = nextOptimisticTimestamp(prevSnapshot.updated_at);
+          const {data: unpubRow, error: propUnpubErr} = await client
+            .from('properties')
+            .update({
+              visibility,
+              is_archived: isArchived,
+              updated_at: step2UpdatedAt,
+            })
+            .eq('id', id)
+            .eq('updated_at', prevSnapshot.updated_at)
+            .select()
+            .maybeSingle();
+          if (propUnpubErr) throw new Error(propUnpubErr.message);
+          if (!unpubRow) {
+            throw new Error(
+              'Concurrent update detected while unpublishing. Reload and try again.'
+            );
+          }
+          const committedUpdatedAt = (unpubRow.updated_at as string) || step2UpdatedAt;
+
+          try {
+            const demotedImages: PropertyImageItem[] = [];
+            for (const row of imgRows) {
+              let nextUrl = row.public_url;
+              if (row.storage_path) {
+                const signed = await refreshPrivateImageSignedUrl(row.storage_path, client);
+                if (signed) nextUrl = signed;
+              }
+              const {error: imgDemoteErr} = await client
                 .from('property_images')
                 .update({
-                  storage_bucket: PUBLIC_MEDIA_BUCKET,
-                  is_approved_public: true,
-                  public_url: finalUrl,
+                  storage_bucket: PRIVATE_MEDIA_BUCKET,
+                  is_approved_public: false,
+                  public_url: nextUrl,
                 })
                 .eq('id', row.id);
-              if (imgUpdErr) throw new Error(imgUpdErr.message);
+              if (imgDemoteErr) throw new Error(imgDemoteErr.message);
 
-              updatedImages.push({
+              demotedImages.push({
                 id: row.id,
-                url: finalUrl,
-                storageBucket: PUBLIC_MEDIA_BUCKET,
+                url: nextUrl,
+                storageBucket: PRIVATE_MEDIA_BUCKET,
                 storagePath: row.storage_path,
                 caption: row.caption,
                 isCover: row.is_cover,
-                isApprovedPublic: true,
+                isApprovedPublic: false,
                 sortOrder: row.sort_order,
               });
             }
 
-            const updatedDocs: PropertyDocumentItem[] = [];
-            for (const d of docRows) {
-              if (
-                d.visibility === 'Public' &&
-                d.storage_bucket === PRIVATE_MEDIA_BUCKET &&
-                d.storage_path
-              ) {
-                const promotedDocUrl = await promoteFileToPublicBucket(
-                  d.storage_path,
-                  d.mime_type,
-                  client
-                );
-                if (!promotedDocUrl) {
-                  throw new Error(
-                    `Failed to promote public document "${d.file_name}" before publishing.`
-                  );
-                }
-                if (!prevPublicPaths.has(d.storage_path)) {
-                  newlyPromotedPublicPaths.push(d.storage_path);
-                }
-                promotedPrivateDuplicates.push(d.storage_path);
-                const {error: docUpdErr} = await client
+            const demotedDocs: PropertyDocumentItem[] = [];
+            for (const doc of docRows) {
+              if (doc.storage_bucket === PUBLIC_MEDIA_BUCKET) {
+                const {error: docDemoteErr} = await client
                   .from('property_documents')
-                  .update({storage_bucket: PUBLIC_MEDIA_BUCKET})
-                  .eq('id', d.id);
-                if (docUpdErr) throw new Error(docUpdErr.message);
-
-                updatedDocs.push({
-                  id: d.id,
-                  title: d.title,
-                  category: d.category,
-                  visibility: d.visibility,
-                  storageBucket: PUBLIC_MEDIA_BUCKET,
-                  storagePath: d.storage_path,
-                  fileName: d.file_name,
-                  mimeType: d.mime_type,
-                  fileSizeBytes: Number(d.file_size_bytes) || 0,
-                  publicUrl: promotedDocUrl,
-                  uploadedAt: d.created_at,
-                });
-              } else {
-                updatedDocs.push({
-                  id: d.id,
-                  title: d.title,
-                  category: d.category,
-                  visibility: d.visibility,
-                  storageBucket: d.storage_bucket,
-                  storagePath: d.storage_path,
-                  fileName: d.file_name,
-                  mimeType: d.mime_type,
-                  fileSizeBytes: Number(d.file_size_bytes) || 0,
-                  uploadedAt: d.created_at,
-                });
+                  .update({storage_bucket: PRIVATE_MEDIA_BUCKET})
+                  .eq('id', doc.id);
+                if (docDemoteErr) throw new Error(docDemoteErr.message);
               }
+              demotedDocs.push({
+                id: doc.id,
+                title: doc.title,
+                category: doc.category,
+                visibility: doc.visibility,
+                storageBucket: PRIVATE_MEDIA_BUCKET,
+                storagePath: doc.storage_path,
+                fileName: doc.file_name,
+                mimeType: doc.mime_type,
+                fileSizeBytes: Number(doc.file_size_bytes) || 0,
+                uploadedAt: doc.created_at,
+              });
             }
 
-            const orderedApprovedUrls = sortImagesCoverFirst(updatedImages)
-              .filter((img) => img.isApprovedPublic)
-              .map((img) => img.url);
-            const fallbackPhotos =
-              orderedApprovedUrls.length > 0 ? orderedApprovedUrls : mapped.photos;
-
-            const finalUpdatedAt = nextOptimisticTimestamp(committedUpdatedAt);
-            const {data: finalRow, error: photoSyncErr} = await client
-              .from('properties')
-              .update({photos: fallbackPhotos, updated_at: finalUpdatedAt})
-              .eq('id', id)
-              .eq('updated_at', committedUpdatedAt)
-              .select()
-              .maybeSingle();
-            if (photoSyncErr) throw new Error(photoSyncErr.message);
-            if (!finalRow) {
-              throw new Error(
-                'Concurrent update detected while publishing media. Newer administrator changes were detected.'
+            const demotedPres: PropertyPresentationItem[] = [];
+            for (const p of presRows) {
+              let nextCoverUrl = p.cover_public_url;
+              if (p.cover_storage_path) {
+                const signedCover = await refreshPrivateImageSignedUrl(p.cover_storage_path, client);
+                if (signedCover) nextCoverUrl = signedCover;
+              }
+              if (
+                p.pdf_storage_bucket === PUBLIC_MEDIA_BUCKET ||
+                p.pptx_storage_bucket === PUBLIC_MEDIA_BUCKET ||
+                p.cover_storage_bucket === PUBLIC_MEDIA_BUCKET
+              ) {
+                const {error: presDemoteErr} = await client
+                  .from('property_presentations')
+                  .update({
+                    pdf_storage_bucket: PRIVATE_MEDIA_BUCKET,
+                    pptx_storage_bucket: PRIVATE_MEDIA_BUCKET,
+                    cover_storage_bucket: PRIVATE_MEDIA_BUCKET,
+                    cover_public_url: nextCoverUrl,
+                  })
+                  .eq('id', p.id);
+                if (presDemoteErr) throw new Error(presDemoteErr.message);
+              }
+              demotedPres.push(
+                mapPresentationRow(
+                  {
+                    ...p,
+                    pdf_storage_bucket: PRIVATE_MEDIA_BUCKET,
+                    pptx_storage_bucket: PRIVATE_MEDIA_BUCKET,
+                    cover_storage_bucket: PRIVATE_MEDIA_BUCKET,
+                    cover_public_url: nextCoverUrl,
+                  },
+                  client
+                )
               );
             }
 
-            // Post-commit cleanup of redundant staged private copies
-            if (promotedPrivateDuplicates.length > 0) {
-              const safeRedundant = await findDeletableStoragePaths(
-                client,
-                PRIVATE_MEDIA_BUCKET,
-                promotedPrivateDuplicates,
-                id
-              );
-              await removeStoragePathsFromBucket(PRIVATE_MEDIA_BUCKET, safeRedundant, client);
+            const demotedPhotoUrls = sortImagesCoverFirst(demotedImages).map((i) => i.url);
+            let finalUpdatedAt = committedUpdatedAt;
+            if (demotedPhotoUrls.length > 0) {
+              const nextUnpubTs = nextOptimisticTimestamp(committedUpdatedAt);
+              const {data: photosUpdRow, error: photosUpdErr} = await client
+                .from('properties')
+                .update({photos: demotedPhotoUrls, updated_at: nextUnpubTs})
+                .eq('id', id)
+                .eq('updated_at', committedUpdatedAt)
+                .select()
+                .maybeSingle();
+              if (photosUpdErr) throw new Error(photosUpdErr.message);
+              if (!photosUpdRow) {
+                throw new Error(
+                  'Concurrent update detected while unpublishing media. Newer administrator changes were detected.'
+                );
+              }
+              finalUpdatedAt = (photosUpdRow.updated_at as string) || nextUnpubTs;
             }
+
+            const safePublicRemoval = await findDeletableStoragePaths(
+              client,
+              PUBLIC_MEDIA_BUCKET,
+              publicPathsToRemove,
+              id
+            );
+            await removeStoragePathsFromBucket(PUBLIC_MEDIA_BUCKET, safePublicRemoval, client);
 
             return normalizeProperty({
               ...mapped,
-              visibility: 'Published',
-              isArchived: false,
-              publishedAt: nextPublishedAt,
-              images: sortImagesCoverFirst(updatedImages),
-              photos: fallbackPhotos,
-              documents: updatedDocs,
-              updatedAt: finalRow?.updated_at || committedUpdatedAt,
+              visibility,
+              isArchived,
+              images: sortImagesCoverFirst(demotedImages),
+              photos: demotedPhotoUrls.length > 0 ? demotedPhotoUrls : mapped.photos,
+              documents: demotedDocs,
+              presentations: sortPresentations(demotedPres),
+              updatedAt: finalUpdatedAt,
             });
           } catch (err) {
             const restoredRow = await restorePropertyRowSnapshot(
@@ -1975,16 +2938,8 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             if (restoredRow) {
               await restoreRelationsSnapshot(client, id, prevRelations);
             }
-            if (newlyPromotedPublicPaths.length > 0) {
-              const safePromotedCleanup = await findDeletableStoragePaths(
-                client,
-                PUBLIC_MEDIA_BUCKET,
-                newlyPromotedPublicPaths
-              );
-              await cleanupPromotedPublicObjects(safePromotedCleanup, client);
-            }
             if (!restoredRow) {
-              const baseMessage = err instanceof Error ? err.message : 'Publishing failed.';
+              const baseMessage = err instanceof Error ? err.message : 'Unpublishing failed.';
               throw new Error(
                 `${baseMessage} Concurrent changes from another administrator were detected and preserved.`
               );
@@ -1993,194 +2948,48 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
           }
         }
 
-        // Unpublishing / Archiving:
-        // 1. Verify & create private backups BEFORE changing DB or deleting from public bucket
-        const publicPathsToRemove: string[] = [];
-        for (const row of imgRows) {
-          if (row.storage_bucket === PUBLIC_MEDIA_BUCKET && row.storage_path) {
-            await ensurePrivateBackupFromPublicBucket(row.storage_path, 'image/webp', client);
-            publicPathsToRemove.push(row.storage_path);
+        const existing = readDemoProperties();
+        if (visibility === 'Published') {
+          const target = existing.find((item) => item.id === id);
+          if (target) {
+            const publishErrors = validatePropertyForPublish(target);
+            if (publishErrors.length > 0) {
+              throw new Error(publishErrors[0]);
+            }
           }
         }
-        for (const doc of docRows) {
-          if (doc.storage_bucket === PUBLIC_MEDIA_BUCKET && doc.storage_path) {
-            await ensurePrivateBackupFromPublicBucket(doc.storage_path, doc.mime_type, client);
-            publicPathsToRemove.push(doc.storage_path);
-          }
-        }
-
-        // 2. Commit DB unpublish & relation demotion inside rollback boundary
-        const step2UpdatedAt = nextOptimisticTimestamp(prevSnapshot.updated_at);
-        const {data: unpubRow, error: propUnpubErr} = await client
-          .from('properties')
-          .update({
-            visibility,
-            is_archived: isArchived,
-            updated_at: step2UpdatedAt,
+        let updatedDemoProperty: Property | undefined;
+        const updatedList = await Promise.all(
+          existing.map(async (item) => {
+            if (item.id !== id) return item;
+            const [preparedImages, preparedDocuments, preparedPresentations] = await Promise.all([
+              prepareImagesForVisibility(item.images, visibility),
+              prepareDocumentsForVisibility(item.documents, visibility),
+              preparePresentationsForVisibility(item.presentations || [], visibility),
+            ]);
+            const orderedPhotos =
+              preparedImages.length > 0
+                ? sortImagesCoverFirst(preparedImages).map((img) => img.url)
+                : item.photos;
+            updatedDemoProperty = normalizeProperty({
+              ...item,
+              visibility,
+              isArchived,
+              images: preparedImages,
+              photos: orderedPhotos,
+              documents: preparedDocuments,
+              presentations: preparedPresentations,
+              publishedAt:
+                visibility === 'Published'
+                  ? item.publishedAt || new Date().toISOString()
+                  : item.publishedAt,
+              updatedAt: new Date().toISOString(),
+            });
+            return updatedDemoProperty;
           })
-          .eq('id', id)
-          .eq('updated_at', prevSnapshot.updated_at)
-          .select()
-          .maybeSingle();
-        if (propUnpubErr) throw new Error(propUnpubErr.message);
-        if (!unpubRow) {
-          throw new Error(
-            'Concurrent update detected while unpublishing. Reload and try again.'
-          );
-        }
-        const committedUpdatedAt = (unpubRow.updated_at as string) || step2UpdatedAt;
-
-        try {
-          const demotedImages: PropertyImageItem[] = [];
-          for (const row of imgRows) {
-            let nextUrl = row.public_url;
-            if (row.storage_path) {
-              const signed = await refreshPrivateImageSignedUrl(row.storage_path, client);
-              if (signed) nextUrl = signed;
-            }
-            const {error: imgDemoteErr} = await client
-              .from('property_images')
-              .update({
-                storage_bucket: PRIVATE_MEDIA_BUCKET,
-                is_approved_public: false,
-                public_url: nextUrl,
-              })
-              .eq('id', row.id);
-            if (imgDemoteErr) throw new Error(imgDemoteErr.message);
-
-            demotedImages.push({
-              id: row.id,
-              url: nextUrl,
-              storageBucket: PRIVATE_MEDIA_BUCKET,
-              storagePath: row.storage_path,
-              caption: row.caption,
-              isCover: row.is_cover,
-              isApprovedPublic: false,
-              sortOrder: row.sort_order,
-            });
-          }
-
-          const demotedDocs: PropertyDocumentItem[] = [];
-          for (const doc of docRows) {
-            if (doc.storage_bucket === PUBLIC_MEDIA_BUCKET) {
-              const {error: docDemoteErr} = await client
-                .from('property_documents')
-                .update({storage_bucket: PRIVATE_MEDIA_BUCKET})
-                .eq('id', doc.id);
-              if (docDemoteErr) throw new Error(docDemoteErr.message);
-            }
-            demotedDocs.push({
-              id: doc.id,
-              title: doc.title,
-              category: doc.category,
-              visibility: doc.visibility,
-              storageBucket: PRIVATE_MEDIA_BUCKET,
-              storagePath: doc.storage_path,
-              fileName: doc.file_name,
-              mimeType: doc.mime_type,
-              fileSizeBytes: Number(doc.file_size_bytes) || 0,
-              uploadedAt: doc.created_at,
-            });
-          }
-
-          const demotedPhotoUrls = sortImagesCoverFirst(demotedImages).map((i) => i.url);
-          let finalUpdatedAt = committedUpdatedAt;
-          if (demotedPhotoUrls.length > 0) {
-            const nextUnpubTs = nextOptimisticTimestamp(committedUpdatedAt);
-            const {data: photosUpdRow, error: photosUpdErr} = await client
-              .from('properties')
-              .update({photos: demotedPhotoUrls, updated_at: nextUnpubTs})
-              .eq('id', id)
-              .eq('updated_at', committedUpdatedAt)
-              .select()
-              .maybeSingle();
-            if (photosUpdErr) throw new Error(photosUpdErr.message);
-            if (!photosUpdRow) {
-              throw new Error(
-                'Concurrent update detected while unpublishing media. Newer administrator changes were detected.'
-              );
-            }
-            finalUpdatedAt = (photosUpdRow.updated_at as string) || nextUnpubTs;
-          }
-
-          // 3. Post-commit physical deletion from property-media-public (excluding any path still referenced elsewhere)
-          const safePublicRemoval = await findDeletableStoragePaths(
-            client,
-            PUBLIC_MEDIA_BUCKET,
-            publicPathsToRemove,
-            id
-          );
-          await removeStoragePathsFromBucket(PUBLIC_MEDIA_BUCKET, safePublicRemoval, client);
-
-          return normalizeProperty({
-            ...mapped,
-            visibility,
-            isArchived,
-            images: sortImagesCoverFirst(demotedImages),
-            photos: demotedPhotoUrls.length > 0 ? demotedPhotoUrls : mapped.photos,
-            documents: demotedDocs,
-            updatedAt: finalUpdatedAt,
-          });
-        } catch (err) {
-          const restoredRow = await restorePropertyRowSnapshot(
-            client,
-            id,
-            prevSnapshot,
-            committedUpdatedAt
-          );
-          if (restoredRow) {
-            await restoreRelationsSnapshot(client, id, prevRelations);
-          }
-          if (!restoredRow) {
-            const baseMessage = err instanceof Error ? err.message : 'Unpublishing failed.';
-            throw new Error(
-              `${baseMessage} Concurrent changes from another administrator were detected and preserved.`
-            );
-          }
-          throw err;
-        }
-      }
-
-      const existing = readDemoProperties();
-      if (visibility === 'Published') {
-        const target = existing.find((item) => item.id === id);
-        if (target) {
-          const publishErrors = validatePropertyForPublish(target);
-          if (publishErrors.length > 0) {
-            throw new Error(publishErrors[0]);
-          }
-        }
-      }
-      let updatedDemoProperty: Property | undefined;
-      const updatedList = await Promise.all(
-        existing.map(async (item) => {
-          if (item.id !== id) return item;
-          const [preparedImages, preparedDocuments] = await Promise.all([
-            prepareImagesForVisibility(item.images, visibility),
-            prepareDocumentsForVisibility(item.documents, visibility),
-          ]);
-          const orderedPhotos =
-            preparedImages.length > 0
-              ? sortImagesCoverFirst(preparedImages).map((img) => img.url)
-              : item.photos;
-          updatedDemoProperty = normalizeProperty({
-            ...item,
-            visibility,
-            isArchived,
-            images: preparedImages,
-            photos: orderedPhotos,
-            documents: preparedDocuments,
-            publishedAt:
-              visibility === 'Published'
-                ? item.publishedAt || new Date().toISOString()
-                : item.publishedAt,
-            updatedAt: new Date().toISOString(),
-          });
-          return updatedDemoProperty;
-        })
-      );
-      writeDemoProperties(updatedList);
-      return updatedDemoProperty;
+        );
+        writeDemoProperties(updatedList);
+        return updatedDemoProperty;
       });
     },
 
@@ -2218,7 +3027,7 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
       return withPropertyMutationLock(id, async () => {
         const client = activeClient();
         if (client) {
-          const [{data: imgRows}, {data: docRows}] = await Promise.all([
+          const [{data: imgRows}, {data: docRows}, {data: presRows}] = await Promise.all([
             client
               .from('property_images')
               .select('storage_bucket, storage_path')
@@ -2226,6 +3035,12 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
             client
               .from('property_documents')
               .select('storage_bucket, storage_path')
+              .eq('property_id', id),
+            client
+              .from('property_presentations')
+              .select(
+                'pdf_storage_bucket, pdf_storage_path, pptx_storage_bucket, pptx_storage_path, cover_storage_bucket, cover_storage_path'
+              )
               .eq('property_id', id),
           ]);
 
@@ -2240,12 +3055,27 @@ export function createPropertyService(getClient?: () => SupabaseClientLike) {
               privatePaths.push(path);
             }
           }
+          for (const p of (presRows || []) as SupabasePresentationRow[]) {
+            if (p.pdf_storage_path) {
+              (p.pdf_storage_bucket === PUBLIC_MEDIA_BUCKET ? publicPaths : privatePaths).push(
+                p.pdf_storage_path
+              );
+            }
+            if (p.pptx_storage_path) {
+              (p.pptx_storage_bucket === PUBLIC_MEDIA_BUCKET ? publicPaths : privatePaths).push(
+                p.pptx_storage_path
+              );
+            }
+            if (p.cover_storage_path) {
+              (p.cover_storage_bucket === PUBLIC_MEDIA_BUCKET ? publicPaths : privatePaths).push(
+                p.cover_storage_path
+              );
+            }
+          }
 
-          // Delete DB record FIRST (cascade revokes Storage RLS before removing blobs)
           const {error} = await client.from('properties').delete().eq('id', id);
           if (error) throw new Error(error.message);
 
-          // Protect any Storage paths still referenced by another property
           const [safePublicPaths, safePrivatePaths] = await Promise.all([
             findDeletableStoragePaths(client, PUBLIC_MEDIA_BUCKET, publicPaths),
             findDeletableStoragePaths(client, PRIVATE_MEDIA_BUCKET, [...privatePaths, ...publicPaths]),

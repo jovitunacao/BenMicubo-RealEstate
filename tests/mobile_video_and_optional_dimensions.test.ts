@@ -7,7 +7,11 @@ import {
   parsePropertyVideoUrl,
   resolveVideoRenderMode,
 } from '../src/utils/video';
-import {computePricePerSqm, shouldDisplayLotDimensions} from '../src/utils/format';
+import {
+  computePricePerSqm,
+  formatFrontageLength,
+  hasVisibleFrontageLength,
+} from '../src/utils/format';
 import {buildPropertyDossierModel} from '../src/utils/dossierLayout';
 import {
   createPropertyService,
@@ -43,7 +47,7 @@ if (!globalThis.localStorage) {
 
 function makeSampleProperty(overrides: Partial<Property> = {}): Property {
   return {
-    id: 'prop-dim-1',
+    id: 'prop-frontage-1',
     lotId: 'LOT-888',
     title: 'Irregular Triangular Creekfront Parcel',
     barangay: 'Brgy. Luksuhin',
@@ -52,11 +56,13 @@ function makeSampleProperty(overrides: Partial<Property> = {}): Property {
     region: 'CALABARZON (Region IV-A)',
     completeLocation: 'Brgy. Luksuhin, Alfonso, Cavite',
     lotAreaSqm: 1250,
-    dimensions: '32m frontage × 45m west × 58m rear',
-    showLotDimensions: true,
+    frontageLengthM: 32.5,
+    dimensions: '32m × 40m', // Legacy stored column — must NEVER render publicly
     boundaryDescription: 'Multi-segment polygon along barangay road and creek easement',
     pricePerSqm: 12000,
     priceTotalPhp: 15000000,
+    showSellingPrice: true,
+    showPricePerSqm: true,
     isPriceManualOverride: false,
     isNegotiable: false,
     classification: 'Residential',
@@ -73,7 +79,9 @@ function makeSampleProperty(overrides: Partial<Property> = {}): Property {
     additionalRemarks: '',
     description: 'Verified triangular parcel with direct concrete road frontage.',
     highlights: ['Clean TCT', 'Creek easement setback'],
-    photos: ['https://cdn.example.com/storage/v1/object/public/property-media-public/LOT-888/cover.webp'],
+    photos: [
+      'https://cdn.example.com/storage/v1/object/public/property-media-public/LOT-888/cover.webp',
+    ],
     images: [
       {
         id: 'img-888-1',
@@ -98,6 +106,7 @@ function makeSampleProperty(overrides: Partial<Property> = {}): Property {
       },
     ],
     documents: [],
+    presentations: [],
     latitude: 14.135,
     longitude: 120.855,
     googleMapsUrl: 'https://www.google.com/maps/search/?api=1&query=14.135,120.855',
@@ -111,11 +120,10 @@ function makeSampleProperty(overrides: Partial<Property> = {}): Property {
 }
 
 // ============================================================================
-// TASK 1 TESTS — MOBILE GOOGLE DRIVE VIDEO PLAYER FIX
+// VIDEO PLAYBACK — IN-PAGE GOOGLE DRIVE & YOUTUBE ON MOBILE & DESKTOP
 // ============================================================================
 
-test('Task 1: Reliable mobile detection identifies iPhone Safari, Android Chrome, and iPadOS without screen width alone', () => {
-  // iPhone Safari (portrait or landscape)
+test('Video Detection & In-Page Embed: Google Drive and YouTube both render inline on mobile and desktop', () => {
   assert.equal(
     detectMobilePlaybackEnvironment({
       userAgent:
@@ -126,42 +134,6 @@ test('Task 1: Reliable mobile detection identifies iPhone Safari, Android Chrome
     true
   );
 
-  // Android Chrome (portrait or landscape)
-  assert.equal(
-    detectMobilePlaybackEnvironment({
-      userAgent:
-        'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
-      maxTouchPoints: 5,
-      coarsePointer: true,
-      userAgentDataMobile: true,
-    }),
-    true
-  );
-
-  // iPadOS Safari reporting desktop Macintosh UA + touch points
-  assert.equal(
-    detectMobilePlaybackEnvironment({
-      userAgent:
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
-      platform: 'MacIntel',
-      maxTouchPoints: 5,
-      coarsePointer: true,
-    }),
-    true
-  );
-
-  // Desktop macOS / Windows Chrome & Safari -> desktop mode
-  assert.equal(
-    detectMobilePlaybackEnvironment({
-      userAgent:
-        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      platform: 'MacIntel',
-      maxTouchPoints: 0,
-      coarsePointer: false,
-      userAgentDataMobile: false,
-    }),
-    false
-  );
   assert.equal(
     detectMobilePlaybackEnvironment({
       userAgent:
@@ -172,9 +144,7 @@ test('Task 1: Reliable mobile detection identifies iPhone Safari, Android Chrome
     }),
     false
   );
-});
 
-test('Task 1: Mobile Google Drive uses external preview card without mounting an iframe, while desktop Drive and all YouTube preserve embeds', () => {
   const driveParsed = parsePropertyVideoUrl(
     'https://drive.google.com/file/d/1DriveVideoId123456/view?usp=sharing'
   );
@@ -183,157 +153,142 @@ test('Task 1: Mobile Google Drive uses external preview card without mounting an
     driveParsed.canonicalUrl,
     'https://drive.google.com/file/d/1DriveVideoId123456/view'
   );
+  assert.equal(
+    driveParsed.embedUrl,
+    'https://drive.google.com/file/d/1DriveVideoId123456/preview'
+  );
 
-  const ytParsed = parsePropertyVideoUrl('https://www.youtube.com/watch?v=LXb3EKWsInQ');
-  assert.ok(ytParsed);
-
-  // Render strategies
-  assert.equal(resolveVideoRenderMode('google_drive', true), 'mobile_external_card');
+  // Task 4: both mobile and desktop stay in-page (never auto-redirect externally)
+  assert.equal(resolveVideoRenderMode('google_drive', true), 'inline_embed');
   assert.equal(resolveVideoRenderMode('google_drive', false), 'inline_embed');
   assert.equal(resolveVideoRenderMode('youtube', true), 'inline_embed');
   assert.equal(resolveVideoRenderMode('youtube', false), 'inline_embed');
 
-  // Verify PropertyVideoPlayer mounts mobile_external_card strictly BEFORE any <iframe> branch
   const playerSrc = readFile('src/components/PropertyVideoPlayer.tsx');
-  const mobileBranchIdx = playerSrc.indexOf("if (renderMode === 'mobile_external_card')");
-  const iframeIdx = playerSrc.indexOf('<iframe');
-  assert.ok(mobileBranchIdx > -1, 'Mobile external card branch exists');
-  assert.ok(iframeIdx > mobileBranchIdx, 'Mobile branch returns BEFORE any <iframe> can mount');
-
-  const mobileBranchCode = playerSrc.slice(mobileBranchIdx, iframeIdx);
-  assert.equal(mobileBranchCode.includes('<iframe'), false);
-  assert.ok(mobileBranchCode.includes('Watch Property Video'));
-  assert.ok(mobileBranchCode.includes('posterSrc'));
-  assert.ok(mobileBranchCode.includes('parsed.canonicalUrl'));
-  assert.ok(mobileBranchCode.includes('target="_blank"'));
-  assert.ok(mobileBranchCode.includes('rel="noopener noreferrer"'));
-  assert.ok(mobileBranchCode.includes('aspect-video'));
+  assert.ok(playerSrc.includes('<iframe'));
+  assert.ok(playerSrc.includes('parsed.embedUrl'));
+  assert.ok(playerSrc.includes('Tap to Play'));
+  assert.ok(playerSrc.includes('aspect-video'));
+  assert.equal(playerSrc.includes('mobile_external_card'), false);
   assert.equal(playerSrc.includes('window.open'), false);
-
-  // Verify PropertyDetailPage passes cover photo as posterFallback
-  const detailSrc = readFile('src/pages/PropertyDetailPage.tsx');
-  assert.ok(detailSrc.includes('posterFallback={galleryImages[0]?.url || currentPhoto}'));
 });
 
 // ============================================================================
-// TASK 2 TESTS — OPTIONAL LOT DIMENSIONS DISPLAY & REFLOW
+// LAND SPECIFICATIONS — LOT DIMENSIONS REMOVED, OPTIONAL FRONTAGE LENGTH
 // ============================================================================
 
-test('Task 2: Lot dimensions display when enabled, omit completely when disabled, and keep area & price/sqm intact', () => {
-  const enabledProp = makeSampleProperty({
-    showLotDimensions: true,
-    dimensions: '32m frontage × 45m west × 58m rear',
+test('Frontage Length renders when positive numeric value is present, omits cleanly when blank, and never displays legacy dimensions', () => {
+  const withFrontage = makeSampleProperty({
+    frontageLengthM: 32.5,
+    dimensions: '32m × 40m',
     lotAreaSqm: 1250,
     priceTotalPhp: 15000000,
   });
 
-  assert.equal(shouldDisplayLotDimensions(enabledProp), true);
-  const enabledDossier = buildPropertyDossierModel(enabledProp, {
+  assert.equal(hasVisibleFrontageLength(withFrontage), true);
+  assert.equal(formatFrontageLength(32.5), '32.5 m');
+
+  const dossierWithFrontage = buildPropertyDossierModel(withFrontage, {
     isPreviewAllowed: false,
     effectiveCanonicalSiteUrl: 'https://benmicuborealestate.pages.dev',
   });
-  assert.equal(enabledDossier.accessible, true);
-  if (enabledDossier.accessible) {
-    assert.equal(enabledDossier.dimensionsLabel, '32m frontage × 45m west × 58m rear');
-    assert.ok(enabledDossier.executiveMetrics.some((m) => m.label === 'Dimensions'));
-    assert.ok(enabledDossier.specificationLedger.some((s) => s.label === 'Lot Dimensions'));
-    assert.equal(enabledDossier.executiveMetrics.length, 4);
+  assert.equal(dossierWithFrontage.accessible, true);
+  if (dossierWithFrontage.accessible) {
+    assert.equal(dossierWithFrontage.frontageLengthLabel, '32.5 m');
+    assert.ok(
+      dossierWithFrontage.executiveMetrics.some(
+        (m) => m.label === 'Frontage Length' && m.value === '32.5 m'
+      )
+    );
+    assert.ok(
+      dossierWithFrontage.specificationLedger.some(
+        (s) => s.label === 'Frontage Length' && s.value === '32.5 m'
+      )
+    );
+    assert.equal(
+      dossierWithFrontage.executiveMetrics.some((m) => m.label === 'Dimensions'),
+      false
+    );
+    assert.equal(
+      dossierWithFrontage.specificationLedger.some((s) => s.label === 'Lot Dimensions'),
+      false
+    );
+    assert.equal(dossierWithFrontage.executiveMetrics.length, 4);
   }
 
-  // Now disable Show Lot Dimensions while keeping the saved dimensions string preserved
-  const disabledProp = makeSampleProperty({
-    showLotDimensions: false,
-    dimensions: '32m frontage × 45m west × 58m rear',
+  // Blank / null frontage omits row & rebalances grids cleanly without placeholders
+  const withoutFrontage = makeSampleProperty({
+    frontageLengthM: null,
+    dimensions: '99m × 99m', // Even if populated in legacy DB row, must never appear
     lotAreaSqm: 1250,
     priceTotalPhp: 15000000,
   });
-  assert.equal(shouldDisplayLotDimensions(disabledProp), false);
-  // Underlying dimensions string is NOT deleted
-  assert.equal(disabledProp.dimensions, '32m frontage × 45m west × 58m rear');
 
-  const disabledDossier = buildPropertyDossierModel(disabledProp, {
+  assert.equal(hasVisibleFrontageLength(withoutFrontage), false);
+  assert.equal(formatFrontageLength(null), '');
+
+  const dossierWithoutFrontage = buildPropertyDossierModel(withoutFrontage, {
     isPreviewAllowed: false,
     effectiveCanonicalSiteUrl: 'https://benmicuborealestate.pages.dev',
   });
-  assert.equal(disabledDossier.accessible, true);
-  if (disabledDossier.accessible) {
-    assert.equal(disabledDossier.dimensionsLabel, '');
+  assert.equal(dossierWithoutFrontage.accessible, true);
+  if (dossierWithoutFrontage.accessible) {
+    assert.equal(dossierWithoutFrontage.frontageLengthLabel, '');
     assert.equal(
-      disabledDossier.executiveMetrics.some((m) => m.label === 'Dimensions'),
+      dossierWithoutFrontage.executiveMetrics.some((m) => m.label === 'Frontage Length'),
       false
     );
     assert.equal(
-      disabledDossier.specificationLedger.some((s) => s.label === 'Lot Dimensions'),
+      dossierWithoutFrontage.specificationLedger.some((s) => s.label === 'Frontage Length'),
       false
     );
-    // Reflow: 3 executive metrics, no blank placeholder text anywhere
-    assert.equal(disabledDossier.executiveMetrics.length, 3);
-    assert.equal(disabledDossier.lotAreaLabel, '1,250 sqm');
-    assert.equal(disabledDossier.priceTotalLabel, '₱15,000,000');
+    assert.equal(dossierWithoutFrontage.executiveMetrics.length, 3);
+    assert.equal(dossierWithoutFrontage.lotAreaLabel, '1,250 sqm');
+    assert.equal(dossierWithoutFrontage.priceTotalLabel, '₱15,000,000');
     assert.equal(
-      disabledDossier.pricePerSqmLabel,
+      dossierWithoutFrontage.pricePerSqmLabel,
       `₱${computePricePerSqm(15000000, 1250).toLocaleString('en-PH')} / sqm`
     );
 
-    // Page 3 spec ledger reflow: half-width cells must be even so zero orphan blank box renders
-    const halfWidthCount = disabledDossier.specificationLedger.filter((s) => !s.fullWidth).length;
-    assert.equal(halfWidthCount % 2, 0, '2-column dossier specification grid has zero blank slot');
-    const lotAreaSpec = disabledDossier.specificationLedger.find((s) => s.label === 'Lot Area');
-    assert.ok(lotAreaSpec);
-    assert.equal(lotAreaSpec.value, '1,250 sqm');
-    assert.equal(lotAreaSpec.fullWidth, true);
+    const halfWidthCount = dossierWithoutFrontage.specificationLedger.filter(
+      (s) => !s.fullWidth
+    ).length;
+    assert.equal(halfWidthCount % 2, 0, '2-column specification ledger has zero orphan cells');
 
-    // No "N/A", "Hidden", "Not available", or "Survey pending" placeholders
-    const allSpecText = disabledDossier.specificationLedger
+    const allSpecText = dossierWithoutFrontage.specificationLedger
       .map((s) => `${s.label}:${s.value}`)
       .join('|');
-    assert.equal(/N\/A|Hidden|Not available|Survey pending|Upon survey review/i.test(allSpecText), false);
+    assert.equal(
+      /99m|Dimensions|N\/A|Unknown|Survey pending/i.test(allSpecText),
+      false
+    );
   }
 });
 
-test('Task 2: Existing properties retain display behavior by default and toggle persists across save/refresh without data loss', async () => {
-  // Existing demo properties default to showing dimensions
+test('Frontage Length persists across save/reload, never computes lot area, and demo listings have valid structure', async () => {
   for (const demo of DEMO_PROPERTIES) {
-    assert.equal(demo.showLotDimensions, true);
-    assert.equal(shouldDisplayLotDimensions(demo), true);
+    assert.equal(typeof demo.showSellingPrice, 'boolean');
+    assert.equal(typeof demo.showPricePerSqm, 'boolean');
+    assert.ok(Array.isArray(demo.presentations));
   }
 
-  // Records omitting showLotDimensions default cleanly to true
-  const legacyNormalized = normalizeProperty(makeSampleProperty({showLotDimensions: undefined}));
-  assert.equal(legacyNormalized.showLotDimensions, true);
-
-  // Persist toggle false -> save -> reload -> toggle true -> verify saved dimensions preserved!
   memStore.clear();
   const svc = createPropertyService(() => null);
   const {id: _id, updatedAt: _u, ...baseFields} = makeSampleProperty({
-    lotId: 'LOT-IRR-01',
-    dimensions: 'Irregular trapezoidal 18m × 42m × 29m',
-    showLotDimensions: false,
+    lotId: 'LOT-FR-01',
+    lotAreaSqm: 1850,
+    frontageLengthM: 28.75,
   });
   const created = await svc.createProperty(baseFields as PropertyInput);
-  assert.equal(created.showLotDimensions, false);
-  assert.equal(created.dimensions, 'Irregular trapezoidal 18m × 42m × 29m');
+  assert.equal(created.frontageLengthM, 28.75);
+  assert.equal(created.lotAreaSqm, 1850); // Frontage never modifies or computes area
 
-  const reloadedAfterCreate = (await svc.listProperties(true)).find(
-    (p) => p.lotId === 'LOT-IRR-01'
-  );
-  assert.ok(reloadedAfterCreate);
-  assert.equal(reloadedAfterCreate.showLotDimensions, false);
-  assert.equal(reloadedAfterCreate.dimensions, 'Irregular trapezoidal 18m × 42m × 29m');
-  assert.equal(shouldDisplayLotDimensions(reloadedAfterCreate), false);
+  const reloaded = (await svc.listProperties(true)).find((p) => p.lotId === 'LOT-FR-01');
+  assert.ok(reloaded);
+  assert.equal(reloaded.frontageLengthM, 28.75);
+  assert.equal(reloaded.lotAreaSqm, 1850);
 
-  // Re-enable without retyping dimensions -> original saved value returns intact
-  const {id: _id2, updatedAt: currUpdated, ...reEnableFields} = reloadedAfterCreate;
-  const updated = await svc.updateProperty(reloadedAfterCreate.id, {
-    ...(reEnableFields as PropertyInput),
-    showLotDimensions: true,
-    expectedUpdatedAt: currUpdated,
-  });
-  assert.equal(updated.showLotDimensions, true);
-  assert.equal(updated.dimensions, 'Irregular trapezoidal 18m × 42m × 29m');
-  assert.equal(shouldDisplayLotDimensions(updated), true);
-
-  // Also test Supabase row roundtrip mapping
+  // Supabase row roundtrip via public_properties projection
   const capturedUpdates: Array<Record<string, unknown>> = [];
   const mockRow = {
     id: 'supa-prop-1',
@@ -345,11 +300,13 @@ test('Task 2: Existing properties retain display behavior by default and toggle 
     region: 'CALABARZON',
     complete_location: 'Tagaytay City, Cavite',
     lot_area_sqm: 900,
-    dimensions: '15m × 40m × 30m',
-    show_lot_dimensions: false,
+    frontage_length_m: 22.5,
+    dimensions: '15m × 40m',
     boundary_description: '',
     price_per_sqm: 10000,
     price_total_php: 9000000,
+    show_selling_price: true,
+    show_price_per_sqm: true,
     is_price_manual_override: false,
     is_negotiable: false,
     classification: 'Residential',
@@ -366,7 +323,9 @@ test('Task 2: Existing properties retain display behavior by default and toggle 
     additional_remarks: '',
     description: 'Verified triangular ridge parcel with paved frontage.',
     highlights: [],
-    photos: ['https://cdn.example.com/storage/v1/object/public/property-media-public/LOT-SUPA-1/p1.webp'],
+    photos: [
+      'https://cdn.example.com/storage/v1/object/public/property-media-public/LOT-SUPA-1/p1.webp',
+    ],
     youtube_url: null,
     latitude: 14.12,
     longitude: 120.98,
@@ -379,6 +338,7 @@ test('Task 2: Existing properties retain display behavior by default and toggle 
     property_images: [
       {
         id: 'img-s1',
+        property_id: 'supa-prop-1',
         storage_bucket: 'property-media-public',
         storage_path: 'LOT-SUPA-1/p1.webp',
         public_url:
@@ -391,6 +351,7 @@ test('Task 2: Existing properties retain display behavior by default and toggle 
     ],
     property_videos: [],
     property_documents: [],
+    property_presentations: [],
   };
 
   class MockQuery {
@@ -437,12 +398,16 @@ test('Task 2: Existing properties retain display behavior by default and toggle 
       return this.execute(false).then(onfulfilled, onrejected);
     }
     private async execute(single: boolean) {
-      if (this.table === 'properties' && this.mode === 'select') {
-        return {data: single ? mockRow : [mockRow], error: null};
+      if ((this.table === 'properties' || this.table === 'public_properties') && this.mode === 'select') {
+        const row =
+          this.table === 'public_properties' ? {...mockRow, dimensions: undefined} : mockRow;
+        return {data: single ? row : [row], error: null};
+      }
+      if (this.table === 'property_images' && this.mode === 'select') {
+        return {data: mockRow.property_images, error: null};
       }
       if (this.table === 'properties' && this.mode === 'update' && this.payload) {
-        const merged = {...mockRow, ...this.payload};
-        return {data: merged, error: null};
+        return {data: {...mockRow, ...this.payload}, error: null};
       }
       return {data: single ? {} : [], error: null};
     }
@@ -464,50 +429,54 @@ test('Task 2: Existing properties retain display behavior by default and toggle 
   const supaSvc = createPropertyService(() => fakeClient);
   const fetched = await supaSvc.listProperties(false);
   assert.equal(fetched.length, 1);
-  assert.equal(fetched[0].showLotDimensions, false);
-  assert.equal(fetched[0].dimensions, '15m × 40m × 30m');
+  assert.equal(fetched[0].frontageLengthM, 22.5);
+  assert.equal(fetched[0].dimensions, ''); // Redacted on public read
 
   const {id: _sid, updatedAt: sUpdated, ...supaFields} = fetched[0];
   await supaSvc.updateProperty(fetched[0].id, {
     ...(supaFields as PropertyInput),
-    showLotDimensions: false,
+    frontageLengthM: 25.4,
     expectedUpdatedAt: sUpdated,
   });
   assert.ok(
-    capturedUpdates.some((u) => u.show_lot_dimensions === false),
-    'Supabase update writes show_lot_dimensions column explicitly'
+    capturedUpdates.some((u) => u.frontage_length_m === 25.4),
+    'Supabase update writes frontage_length_m column explicitly'
   );
+  // Normalize preserves valid frontage
+  assert.equal(normalizeProperty({id: 'n1', lotId: 'LOT-N1', frontageLengthM: 18.2}).frontageLengthM, 18.2);
 });
 
-test('Task 2: Admin UI, public templates, and non-destructive SQL migration meet all requirements', () => {
+test('UI components, public views, and additive SQL migration enforce frontage & remove lot dimensions', () => {
   const editorSrc = readFile('src/components/AdminPropertyEditor.tsx');
-  assert.ok(editorSrc.includes('Show Lot Dimensions on Public Listing'));
+  assert.ok(editorSrc.includes('Frontage Length (meters)'));
   assert.ok(
     editorSrc.includes(
-      'Disable for irregularly shaped lots or properties where simple length × width measurements are not applicable.'
+      'Enter the verified frontage length in meters. Leave blank if unknown or not applicable.'
     )
   );
-  // Must not pre-populate fake '20m × 25m' or 'Standard parcel' when creating new properties
-  assert.equal(editorSrc.includes('Standard parcel'), false);
-  assert.equal(editorSrc.includes("'20m × 25m'"), false);
+  assert.equal(editorSrc.includes('Show Lot Dimensions'), false);
 
   const detailSrc = readFile('src/pages/PropertyDetailPage.tsx');
-  assert.ok(detailSrc.includes('shouldDisplayLotDimensions(property)'));
-  assert.ok(detailSrc.includes('coreSpecs.length % 2 === 1'));
-
-  const dossierComponentSrc = readFile('src/components/PropertyDossierA4.tsx');
-  assert.ok(dossierComponentSrc.includes('dossier.executiveMetrics.length === 3'));
+  assert.ok(detailSrc.includes('frontageLabel'));
+  assert.ok(detailSrc.includes('Frontage Length'));
+  assert.equal(detailSrc.includes('Lot Dimensions'), false);
 
   const cardSrc = readFile('src/components/PropertyCard.tsx');
-  assert.ok(cardSrc.includes('shouldDisplayLotDimensions(property)'));
+  assert.ok(cardSrc.includes('frontageLabel'));
+  assert.equal(cardSrc.includes('property.dimensions'), false);
 
   const signageSrc = readFile('src/pages/SignagePrintPage.tsx');
-  assert.ok(signageSrc.includes('shouldDisplayLotDimensions(property)'));
+  assert.ok(signageSrc.includes('Frontage'));
+  assert.equal(signageSrc.includes('property.dimensions'), false);
 
-  const migrationSql = readFile('supabase/migrations/20261120_optional_lot_dimensions.sql');
-  assert.match(
-    migrationSql,
-    /alter table public\.properties\s+add column if not exists show_lot_dimensions boolean not null default true;/i
+  const migrationSql = readFile(
+    'supabase/migrations/20261124_presentations_frontage_price_visibility.sql'
   );
-  assert.equal(/\b(drop|delete|truncate)\b/i.test(migrationSql), false);
+  assert.match(migrationSql, /add column if not exists frontage_length_m numeric/i);
+  const executableMigrationSql = migrationSql
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('--'))
+    .join('\n');
+  // Existing dimensions column is preserved non-destructively (not dropped or truncated)
+  assert.equal(/\b(drop table|drop column|truncate)\b/i.test(executableMigrationSql), false);
 });

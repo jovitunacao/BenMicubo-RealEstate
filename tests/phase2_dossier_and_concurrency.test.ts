@@ -32,6 +32,7 @@ function createConcurrentRaceMockSupabase(hooks?: {
     property_images: [],
     property_videos: [],
     property_documents: [],
+    property_presentations: [],
     admin_users: [],
     inquiries: [],
     site_settings: [],
@@ -143,7 +144,21 @@ function createConcurrentRaceMockSupabase(hooks?: {
         return {data: null, error: null};
       }
 
-      const rows = tables[this.table]
+      const sourceRows: Array<Record<string, unknown>> =
+        this.table === 'public_properties'
+          ? tables.properties
+              .filter((row) => row.visibility === 'Published' && !row.is_archived)
+              .map((row) => ({
+                ...row,
+                dimensions: undefined,
+                price_total_php: row.show_selling_price === false ? null : row.price_total_php,
+                price_per_sqm: row.show_price_per_sqm === false ? null : row.price_per_sqm,
+              }))
+          : this.table === 'public_property_presentations'
+            ? tables.property_presentations.filter((row) => row.visibility === 'Public')
+            : tables[this.table] || [];
+
+      const rows = sourceRows
         .filter((row) => this.filters.every((fn) => fn(row)))
         .map((row) => {
           if (this.table !== 'properties') return {...row};
@@ -152,6 +167,7 @@ function createConcurrentRaceMockSupabase(hooks?: {
             property_images: tables.property_images.filter((i) => i.property_id === row.id),
             property_videos: tables.property_videos.filter((v) => v.property_id === row.id),
             property_documents: tables.property_documents.filter((d) => d.property_id === row.id),
+            property_presentations: tables.property_presentations.filter((p) => p.property_id === row.id),
           };
         });
       return {data: this.wantSingle ? rows[0] || null : rows, error: null};
@@ -274,10 +290,13 @@ function makeBaseProperty(overrides: Partial<Property> = {}): Property {
     region: 'CALABARZON (Region IV-A)',
     completeLocation: 'Brgy. Luksuhin, Alfonso, Cavite',
     lotAreaSqm: 1200,
-    dimensions: '30m × 40m',
+    frontageLengthM: 30,
+    dimensions: '',
     boundaryDescription: 'North: 10m Concrete Road; South: Bamboo Ridge; East: Lot 14; West: Lot 12',
     pricePerSqm: 12500,
     priceTotalPhp: 15000000,
+    showSellingPrice: true,
+    showPricePerSqm: true,
     isPriceManualOverride: false,
     isNegotiable: true,
     classification: 'Residential',
@@ -309,6 +328,7 @@ function makeBaseProperty(overrides: Partial<Property> = {}): Property {
       },
     ],
     documents,
+    presentations: [],
     latitude: 14.132541,
     longitude: 120.854912,
     googleMapsUrl: 'https://www.google.com/maps/search/?api=1&query=14.132541,120.854912',
@@ -607,6 +627,7 @@ test('Phase 2 Dossier Edge Case: handles missing optional fields cleanly without
   const sparse = makeBaseProperty({
     barangay: '',
     region: '',
+    frontageLengthM: null,
     dimensions: '',
     boundaryDescription: '',
     utilities: '',
